@@ -1,0 +1,14 @@
+*.vspscc
+*.vssscc
+*.scc
+*.suo
+*.user
+
+/*.bat
+
+/PayloadRetentionSystem-Next/*.sln
+
+/_release/
+
+/PayloadRetentionSystem-Next/PayloadRetentionSystem-Next/bin/
+/PayloadRetentionSystem-Next/PayloadRetentionSystem-Next/obj/
