@@ -24,7 +24,8 @@ namespace PayloadRetentionSystemNext.Module
 		public string controlTransformName = "";
 
 		[KSPField(isPersistant = false), SerializeField]
-		public Vector3 dockingOrientation = Vector3.zero; // defines the direction of the docking port (when docked at a 0° angle, these local vectors of two ports point into the same direction)
+		public Vector3 dockingOrientation = Vector3.right; // defines the direction of the docking port (when docked at a 0° angle, these local vectors of two ports point into the same direction)
+	// FEHLER unnütz hier drin, weil das durch den Node klar ist
 
 		[KSPField(isPersistant = false), SerializeField]
 		public int snapCount = 2;
@@ -62,7 +63,10 @@ namespace PayloadRetentionSystemNext.Module
 		// Docking and Status
 
 		public Transform nodeTransform;
-		public Transform controlTransform;
+		public Transform controlTransform;	// FEHLER, klären, was die hier sollen? allgemein überall... echt jetzt
+
+//		public Transform portTransform; // FEHLER, neue Idee -> und, wozu sind die anderen da oben eigentlich gut? -> das bei allen Ports mal vereinheitlichen
+			// FEHLER, ist genau gleich dem nodeTransform -> daher nur den nutzen
 
 		public KerbalFSM fsm;
 
@@ -253,6 +257,8 @@ namespace PayloadRetentionSystemNext.Module
 					controlTransform = base.part.transform;
 				}
 			}
+
+//			portTransform = part.FindAttachNode("TrunnionPortNode").nodeTransform;
 
 			StartCoroutine(WaitAndInitialize(state));
 
@@ -504,6 +510,9 @@ static float baseForce = 1000f;
 						}
 					}
 				}
+
+				DockDistance = "-";
+				DockAngle = "-";
 			};
 			st_active.OnLeave = delegate(KFSMState to)
 			{
@@ -524,23 +533,22 @@ static float baseForce = 1000f;
 			{
 				Vector3 distance = otherPort.nodeTransform.position - nodeTransform.position;
 
+				DockDistance = distance.magnitude.ToString();
+
 				if(distance.magnitude < captureDistance)
 				{
 					Vector3 tvref = nodeTransform.TransformDirection(dockingOrientation);
 					Vector3 tv = otherPort.nodeTransform.TransformDirection(otherPort.dockingOrientation);
-					float ang = Vector3.Angle(tvref, tv);
+//					Vector3 tvref = nodeTransform.right;
+//					Vector3 tv = otherPort.nodeTransform.right;
+					float ang = Vector3.SignedAngle(tvref, tv, -nodeTransform.forward);
 
-					bool angleok = false;
+					ang = 360f + ang - (180f / snapCount);
+					ang %= (360f / snapCount);
+					ang -= (180f / snapCount);
 
-					for(int i = 0; i < snapCount; i++)
-					{
-						float ff = (360f / snapCount) * i;
+					bool angleok = ((ang > -5f) && (ang < 5f));
 
-						if((ang > ff - 5f) && (ang < ff + 5f))
-							angleok = true;
-					}
-
-					DockDistance = distance.magnitude.ToString();
 					DockAngle = ang.ToString();
 
 					if(angleok)
@@ -553,6 +561,8 @@ static float baseForce = 1000f;
 						return;
 					}
 				}
+				else
+					DockAngle = "-";
 
 				if(inCaptureDistance)
 					Events["Latch"].active = false;
@@ -564,11 +574,7 @@ static float baseForce = 1000f;
 					float angle = Vector3.Angle(nodeTransform.forward, -otherPort.nodeTransform.forward);
 
 					if(angle <= 15f)
-					{
-						DockDistance = distance.magnitude.ToString();
-						DockAngle = "-";
 						return;
-					}
 				}
 
 				otherPort.fsm.RunEvent(otherPort.on_distance_passive);
@@ -591,12 +597,22 @@ static float baseForce = 1000f;
 				_transstep = 0.0005f / (nodeTransform.position - otherPort.nodeTransform.position).magnitude;
 
 				CaptureJointWoherIchKomme = CaptureJoint.targetPosition;
+
+				part.GetComponent<ModuleAnimateGeneric>().Toggle();
 			};
 			st_latching.OnFixedUpdate = delegate
 			{
-				if(_rotStep > _transstep)
+				if(part.GetComponent<ModuleAnimateGeneric>().Progress == 1f)
 				{
-					_rotStep -= _transstep;
+					CaptureJoint.targetRotation = CaptureJointTargetRotation;
+					CaptureJoint.targetPosition = CaptureJointTargetPosition;
+
+					fsm.RunEvent(on_prelatch);
+				}
+				else
+				{
+				//	_rotStep -= _transstep; -> FEHLER, war früher so, aber für diesen Port ergibt das keinen Sinn, weil das sowieso zu schnell laufen würde
+					_rotStep = part.GetComponent<ModuleAnimateGeneric>().Progress;
 
 					CaptureJoint.targetRotation = Quaternion.Slerp(CaptureJointTargetRotation, Quaternion.identity, _rotStep);
 
@@ -612,13 +628,6 @@ static float baseForce = 1000f;
 // FEHLER, hab's doch noch neu gemacht... mal sehen ob's so stimmt oder zumindest etwas besser passt
 CaptureJoint.targetPosition = Vector3.Slerp(CaptureJointTargetPosition, CaptureJointWoherIchKomme, _rotStep);
 				}
-				else
-				{
-					CaptureJoint.targetRotation = CaptureJointTargetRotation;
-					CaptureJoint.targetPosition = CaptureJointTargetPosition;
-
-					fsm.RunEvent(on_prelatch);
-				}
 			};
 			st_latching.OnLeave = delegate(KFSMState to)
 			{
@@ -633,21 +642,16 @@ CaptureJoint.targetPosition = Vector3.Slerp(CaptureJointTargetPosition, CaptureJ
 				iPos = 10;
 
 	//			if(part.GetComponent<ModuleAnimateGeneric>().Progress > 0f)
-				part.GetComponent<ModuleAnimateGeneric>().Toggle();
+	//			part.GetComponent<ModuleAnimateGeneric>().Toggle();
 			};
 			st_prelatched.OnFixedUpdate = delegate
 			{
-				if(part.GetComponent<ModuleAnimateGeneric>().Progress == 0f)
-				{
-
 				if(--iPos < 0)
 				{
 					Events["Release"].active = true;
 
 					fsm.RunEvent(on_latch);
 					otherPort.fsm.RunEvent(otherPort.on_latch_passive);
-				}
-
 				}
 			};
 			st_prelatched.OnLeave = delegate(KFSMState to)
@@ -847,6 +851,10 @@ CaptureJoint.targetPosition = Vector3.Slerp(CaptureJointTargetPosition, CaptureJ
 
 			float angle = 0f;
 
+			Vector3.SignedAngle(
+				nodeTransform.forward, port.nodeTransform.forward,
+				nodeTransform.up);
+
 			for(int i = 1; i < snapCount; i++)
 			{
 				float ff = (360f / snapCount) * i;
@@ -860,8 +868,17 @@ CaptureJoint.targetPosition = Vector3.Slerp(CaptureJointTargetPosition, CaptureJ
 				}
 			}
 
+//			angle /= (360f / snapCount);
+//			angle = Mathf.Round(angle);
+
+//			angle = ((int)angle % snapCount) * (360f / snapCount);
+
 			Quaternion qt = Quaternion.LookRotation(transform.InverseTransformDirection(nodeTransform.forward), transform.InverseTransformDirection(nodeTransform.TransformDirection(dockingOrientation)));
 			Quaternion qc = Quaternion.LookRotation(transform.InverseTransformDirection(-port.nodeTransform.forward), tv);
+//			Quaternion qt = Quaternion.Inverse(transform.rotation) * portTransform.rotation;
+//			Quaternion qc = Quaternion.AngleAxis(
+//				angle,
+//				Quaternion.Inverse(transform.rotation) * portTransform.up);
 
 			rotation = qt * Quaternion.Inverse(qc);
 

@@ -23,10 +23,10 @@ namespace PayloadRetentionSystemNext.Module
 		public string controlTransformName = "";
 
 		[KSPField(isPersistant = false), SerializeField]
-		public Vector3 dockingOrientation = Vector3.zero; // defines the direction of the docking port (when docked at a 0° angle, these local vectors of two ports point into the same direction)
+		public Vector3 dockingOrientation = Vector3.right; // defines the direction of the docking port (when docked at a 0° angle, these local vectors of two ports point into the same direction)
 
 		[KSPField(isPersistant = false), SerializeField]
-		public int snapCount = 1;
+		public int snapCount = 2;
 
 
 		[KSPField(isPersistant = false)]
@@ -55,6 +55,8 @@ namespace PayloadRetentionSystemNext.Module
 
 		public Transform nodeTransform;
 		public Transform controlTransform;
+
+//		public Transform portTransform; // FEHLER, neue Idee -> und, wozu sind die anderen da oben eigentlich gut?
 
 		public KerbalFSM fsm;
 
@@ -192,6 +194,16 @@ namespace PayloadRetentionSystemNext.Module
 				}
 			}
 
+//			portTransform = part.FindAttachNode("TrunnionPinsNode").nodeTransform;
+
+// FEHLER, Test
+/*fake = new GameObject();
+fake.transform.position = portTransform.position;
+fake.transform.rotation = Quaternion.AngleAxis(180f, -portTransform.right) * portTransform.rotation;
+fake.transform.parent = portTransform;
+fake.SetActive(true);
+fake_nodeTransform = fake.transform;
+*/
 			if(state == StartState.Editor)
 			{
 				Fields["length"].OnValueModified += onChanged_length;
@@ -238,6 +250,15 @@ namespace PayloadRetentionSystemNext.Module
 			SetupFSM();
 
 			fsm.StartFSM(DockStatus);
+
+// FEHLER, ich versuch was -> geht, ist nur fraglich, wieso das nötig ist
+if(st == StartState.Editor)
+			{
+yield return new WaitForFixedUpdate();
+yield return new WaitForFixedUpdate();
+yield return new WaitForFixedUpdate();
+MoveNode();
+			}
 		}
 
 		public void OnDestroy()
@@ -765,8 +786,10 @@ namespace PayloadRetentionSystemNext.Module
 		public Part GetPart()
 		{ return part; }
 
+//GameObject fake; Transform fake_nodeTransform;
 		public Transform GetNodeTransform()
 		{ return nodeTransform; }
+//		{ return fake_nodeTransform; }
 
 		public Vector3 GetDockingOrientation()
 		{ return dockingOrientation; }
