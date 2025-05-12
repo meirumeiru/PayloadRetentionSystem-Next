@@ -35,8 +35,8 @@
       <HintPath>C:\KerbalSpaceProgram_1.12.3\KSP_x64_Data\Managed\Assembly-CSharp.dll</HintPath>
     </Reference>
     <Reference Include="DockingFunctions">
-      <HintPath>..\..\DockingFunctions\DockingFunctions\DockingFunctions\bin\Release\DockingFunctions.dll</HintPath>
-    </Reference>
+      <HintPath>..\..\..\DockingFunctions\DockingFunctions\DockingFunctions\bin\Release\DockingFunctions.dll</HintPath>
+	</Reference>
     <Reference Include="System" />
     <Reference Include="UnityEngine">
       <HintPath>C:\KerbalSpaceProgram_1.12.3\KSP_x64_Data\Managed\UnityEngine.dll</HintPath>
@@ -85,6 +85,8 @@
     <Compile Include="Module\TrunnionLatches.cs" />
     <Compile Include="Module\TrunnionPins.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Utility\EditorEventLogic.cs" />
+    <Compile Include="Utility\LineDrawer.cs" />
   </ItemGroup>
   <ItemGroup />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

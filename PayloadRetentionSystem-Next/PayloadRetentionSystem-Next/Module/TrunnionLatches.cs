@@ -6,11 +6,10 @@ using UnityEngine;
 
 using DockingFunctions;
 
+
 namespace PayloadRetentionSystemNext.Module
 {
-	// FEHLER, wir arbeiten bei den Events nie mit "OnCheckCondition" sondern lösen alle manuell aus... kann man sich fragen, ob das gut ist, aber so lange der Event nur von einem Zustand her kommen kann, spielt das wie keine Rolle
-
-	public class ModuleTrunnionLatches : PartModule, IDockable, IModuleInfo
+	public class ModuleTrunnionLatches : PartModule, IDockable, ITargetable, IModuleInfo
 	{
 		// Settings
 
@@ -21,11 +20,7 @@ namespace PayloadRetentionSystemNext.Module
 		public string referenceAttachNode = "TrunnionPortNode"; // if something is connected to this node, then the state is "Attached" (or "Pre-Attached" -> connected in the VAB/SPH)
 
 		[KSPField(isPersistant = false), SerializeField]
-		public string controlTransformName = "";
-
-		[KSPField(isPersistant = false), SerializeField]
 		public Vector3 dockingOrientation = Vector3.right; // defines the direction of the docking port (when docked at a 0° angle, these local vectors of two ports point into the same direction)
-	// FEHLER unnütz hier drin, weil das durch den Node klar ist
 
 		[KSPField(isPersistant = false), SerializeField]
 		public int snapCount = 2;
@@ -42,13 +37,13 @@ namespace PayloadRetentionSystemNext.Module
 
 
 		[KSPField(isPersistant = false)]
-		public bool gendered = true;
-
-		[KSPField(isPersistant = false)]
-		public bool genderFemale = false;
-
-		[KSPField(isPersistant = false)]
 		public string nodeType = "Trunnion";
+
+		[KSPField(isPersistant = false), SerializeField]
+		private string nodeTypesAccepted = "TrunnionPin";
+
+		public HashSet<string> nodeTypesAcceptedS = null;
+
 
 		[KSPField(isPersistant = false)]
 		public float breakingForce = 10f;
@@ -56,17 +51,22 @@ namespace PayloadRetentionSystemNext.Module
 		[KSPField(isPersistant = false)]
 		public float breakingTorque = 10f;
 
-		[KSPField(isPersistant = false)]
-		public string nodeName = "";				// FEHLER, mal sehen wozu wir den dann nutzen könnten
+		[KSPField(isPersistant = false), SerializeField]
+		public float latchingSpeedRotation = 0.1f; // degrees per second
 
+		[KSPField(isPersistant = false), SerializeField]
+		public float latchingSpeedTranslation = 0.025f; // distance per second
+
+
+		[KSPField(guiFormat = "S", guiActive = true, guiActiveEditor = true, guiName = "Port Name")]
+		public string portName = "";
 
 		// Docking and Status
 
-		public Transform nodeTransform;
-		public Transform controlTransform;	// FEHLER, klären, was die hier sollen? allgemein überall... echt jetzt
+		public BaseEvent evtSetAsTarget;
+		public BaseEvent evtUnsetTarget;
 
-//		public Transform portTransform; // FEHLER, neue Idee -> und, wozu sind die anderen da oben eigentlich gut? -> das bei allen Ports mal vereinheitlichen
-			// FEHLER, ist genau gleich dem nodeTransform -> daher nur den nutzen
+		public Transform nodeTransform;
 
 		public KerbalFSM fsm;
 
@@ -124,20 +124,22 @@ namespace PayloadRetentionSystemNext.Module
 		public uint dockedPartUId;
 
 		public DockedVesselInfo vesselInfo;
+
 		public bool docked = false; // true, if the vessel of the otherPort is and should be the same as our vessel
 
 		private bool inCaptureDistance = false;
 
-		private ConfigurableJoint CaptureJoint;
+		private ConfigurableJoint LatchJoint;
 
-		private Quaternion CaptureJointTargetRotation;
-		private Vector3 CaptureJointTargetPosition;
+		private Quaternion LatchJointTargetRotation;
+		private Vector3 LatchJointTargetPosition;
 
-		private Vector3 CaptureJointWoherIchKomme;	// FEHLER, alles Müll hier
+		private Vector3 LatchJointInitialPosition;
 
-		private float _rotStep;
-		float _transstep = 0.0005f;
-		int iPos = 0;
+		private float latchProgress;
+		private float latchProgressStep = 0.0005f;
+
+		private int latchRelaxCounter;
 
 		// Packed / OnRails
 
@@ -158,7 +160,7 @@ namespace PayloadRetentionSystemNext.Module
 
 		public override void OnAwake()
 		{
-		//	part.dockingPorts.AddUnique(this);
+			part.dockingPorts.AddUnique(this);
 		}
 
 		public override void OnLoad(ConfigNode node)
@@ -226,11 +228,22 @@ namespace PayloadRetentionSystemNext.Module
 		{
 			base.OnStart(state);
 
-			Fields["length"].OnValueModified += onChanged_length;
-			onChanged_length(null);
+			nodeTypesAcceptedS = new HashSet<string>();
 
-			Fields["width"].OnValueModified += onChanged_width;
-			onChanged_width(null);
+			string[] values = nodeTypesAccepted.Split(new char[2] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+			foreach(string s in values)
+				nodeTypesAcceptedS.Add(s);
+
+			if(portName == string.Empty)
+				portName = part.partInfo.title;
+
+			if(state == StartState.Editor)
+			{
+				Fields["length"].OnValueModified += onChanged_length;
+				Fields["width"].OnValueModified += onChanged_width;
+			}
+
+			UpdateDimension();
 
 			if(state == StartState.Editor)
 				return;
@@ -238,45 +251,16 @@ namespace PayloadRetentionSystemNext.Module
 			GameEvents.onVesselGoOnRails.Add(OnPack);
 			GameEvents.onVesselGoOffRails.Add(OnUnpack);
 
-		//	GameEvents.onFloatingOriginShift.Add(OnFloatingOriginShift);
-
 			nodeTransform = base.part.FindModelTransform(nodeTransformName);
 			if(!nodeTransform)
 			{
 				Debug.LogWarning("[Docking Node Module]: WARNING - No node transform found with name " + nodeTransformName, base.part.gameObject);
 				return;
 			}
-			if(controlTransformName == string.Empty)
-				controlTransform = base.part.transform;
-			else
-			{
-				controlTransform = base.part.FindModelTransform(controlTransformName);
-				if(!controlTransform)
-				{
-					Debug.LogWarning("[Docking Node Module]: WARNING - No control transform found with name " + controlTransformName, base.part.gameObject);
-					controlTransform = base.part.transform;
-				}
-			}
-
-//			portTransform = part.FindAttachNode("TrunnionPortNode").nodeTransform;
 
 			StartCoroutine(WaitAndInitialize(state));
 
-			StartCoroutine(WaitAndInitializeDockingNodeFix());
-		}
-
-		// FEHLER, ist 'n Quickfix, solange der blöde Port noch drüber hängt im Part...
-		public IEnumerator WaitAndInitializeDockingNodeFix()
-		{
-			ModuleDockingNode DockingNode = part.FindModuleImplementing<ModuleDockingNode>();
-
-			if(DockingNode)
-			{
-				while((DockingNode.fsm == null) || (!DockingNode.fsm.Started))
-					yield return null;
-
-				DockingNode.fsm.RunEvent(DockingNode.on_disable);
-			}
+	//		StartCoroutine(WaitAndDisableDockingNode());
 		}
 
 		public IEnumerator WaitAndInitialize(StartState st)
@@ -302,7 +286,6 @@ namespace PayloadRetentionSystemNext.Module
 
 		// FEHLER, logo, das könnte auch er laden... aber... na ja...
 				otherPort.otherPort = this;
-				otherPort.dockedPartUId = part.flightID;
 			}
 
 			if((DockStatus == "Inactive")
@@ -356,8 +339,8 @@ namespace PayloadRetentionSystemNext.Module
 // tun wir hier, weil die Teilers gestartet sein müssen, damit's nicht schief geht beim connect und so -> Rigidbody existiert sonst noch nicht uns so...
 			if(DockStatus == "Latched")
 			{
-				BuildCaptureJoint(otherPort);
-				BuildCaptureJoint2();
+				BuildLatchJoint(otherPort);
+				CalculateLatchJointTarget();
 			}
 
 			if(DockStatus == "Docked")
@@ -373,7 +356,20 @@ DockingHelper.OnLoad(this, vesselInfo, otherPort, otherPort.vesselInfo);
 
 			fsm.StartFSM(DockStatus);
 		}
+	/*
+		public IEnumerator WaitAndDisableDockingNode()
+		{
+			ModuleDockingNode DockingNode = part.FindModuleImplementing<ModuleDockingNode>();
 
+			if(DockingNode)
+			{
+				while((DockingNode.fsm == null) || (!DockingNode.fsm.Started))
+					yield return null;
+
+				DockingNode.fsm.RunEvent(DockingNode.on_disable);
+			}
+		}
+	*/
 		public void OnDestroy()
 		{
 			Fields["length"].OnValueModified -= onChanged_length;
@@ -381,8 +377,6 @@ DockingHelper.OnLoad(this, vesselInfo, otherPort, otherPort.vesselInfo);
 
 			GameEvents.onVesselGoOnRails.Remove(OnPack);
 			GameEvents.onVesselGoOffRails.Remove(OnUnpack);
-
-		//	GameEvents.onFloatingOriginShift.Remove(OnFloatingOriginShift);
 		}
 
 		private void OnPack(Vessel v)
@@ -414,37 +408,12 @@ DockingHelper.OnLoad(this, vesselInfo, otherPort, otherPort.vesselInfo);
 					VesselPositionManager.Unregister((followOtherPort == 1) ? vessel : otherPort.vessel);
 					followOtherPort = 0;
 				}
-
-		//		StartCoroutine(OnUnpackDelayed());
 			}
 		}
 
 		////////////////////////////////////////
 		// Functions
-/*
-		void SetCollisions(Collider[] a, Collider[] b, bool ignore)
-		{
-			for(int i = 0; i < a.Length; i++)
-			{
-				for(int j = 0; j < b.Length; j++)
-				{
-					Collider collider = a[i];
-					Collider collider2 = b[j];
-					if(!(collider.attachedRigidbody == collider2.attachedRigidbody))
-					{
-						Physics.IgnoreCollision(collider, collider2, ignore);
 
-Vector3 v; float d;
-Physics.ComputePenetration(collider, collider.transform.position, collider.transform.rotation, collider2, collider2.transform.position, collider2.transform.rotation, out v, out d);
-					}
-				}
-			}
-
-			Physics.SyncTransforms();
-		}
-
-static bool fuckParent = false;
-*/
 static float baseForce = 1000f;
 
 		public void SetupFSM()
@@ -459,6 +428,8 @@ static float baseForce = 1000f;
 
 				Events["TogglePort"].guiName = "Deactivate End Effector";
 				Events["TogglePort"].active = true;
+
+				DockStatus = st_active.name;
 			};
 			st_active.OnFixedUpdate = delegate
 			{
@@ -527,7 +498,8 @@ static float baseForce = 1000f;
 				inCaptureDistance = false;
 
 				otherPort.otherPort = this;
-				otherPort.dockedPartUId = part.flightID;
+
+				DockStatus = st_approaching.name;
 			};
 			st_approaching.OnFixedUpdate = delegate
 			{
@@ -591,80 +563,70 @@ static float baseForce = 1000f;
 				Events["Latch"].active = false;
 				Events["Release"].active = true;
 
-				BuildCaptureJoint(otherPort);
-				BuildCaptureJoint2();
+				BuildLatchJoint(otherPort);
+				CalculateLatchJointTarget();
 
-				_transstep = 0.0005f / (nodeTransform.position - otherPort.nodeTransform.position).magnitude;
+				float latchingDuration = Math.Max(
+						(nodeTransform.position - otherPort.nodeTransform.position).magnitude / latchingSpeedTranslation,
+						(Quaternion.Angle(LatchJointTargetRotation, Quaternion.identity) / latchingSpeedRotation));
 
-				CaptureJointWoherIchKomme = CaptureJoint.targetPosition;
+				if(float.IsNaN(latchingDuration) || float.IsInfinity(latchingDuration))
+					latchingDuration = 10;
+
+				latchProgress = 1;
+				latchProgressStep = TimeWarp.fixedDeltaTime / latchingDuration;
+
+				LatchJointInitialPosition = LatchJoint.targetPosition;
 
 				part.GetComponent<ModuleAnimateGeneric>().Toggle();
+
+				DockStatus = st_latching.name;
 			};
 			st_latching.OnFixedUpdate = delegate
 			{
 				if(part.GetComponent<ModuleAnimateGeneric>().Progress == 1f)
 				{
-					CaptureJoint.targetRotation = CaptureJointTargetRotation;
-					CaptureJoint.targetPosition = CaptureJointTargetPosition;
+					LatchJoint.targetRotation = LatchJointTargetRotation;
+					LatchJoint.targetPosition = LatchJointTargetPosition;
 
 					fsm.RunEvent(on_prelatch);
 				}
 				else
 				{
-				//	_rotStep -= _transstep; -> FEHLER, war früher so, aber für diesen Port ergibt das keinen Sinn, weil das sowieso zu schnell laufen würde
-					_rotStep = part.GetComponent<ModuleAnimateGeneric>().Progress;
+					latchProgress = part.GetComponent<ModuleAnimateGeneric>().Progress;
 
-					CaptureJoint.targetRotation = Quaternion.Slerp(CaptureJointTargetRotation, Quaternion.identity, _rotStep);
-
-					Vector3 diff = otherPort.nodeTransform.position - nodeTransform.position;
-					diff = CaptureJoint.transform.InverseTransformDirection(diff);
-
-					if(diff.magnitude < 0.0005f)
-						CaptureJoint.targetPosition -= diff;
-					else
-						CaptureJoint.targetPosition -= diff.normalized * 0.0005f;
-	// FEHLER, etwas unschön, weil ich kein Slerp machen kann, weil ich mich vorher ausgerichtet habe... hmm... -> evtl. Basis rechnen, dann differenz davon und dann... dazwischen Slerpen?
-
-// FEHLER, hab's doch noch neu gemacht... mal sehen ob's so stimmt oder zumindest etwas besser passt
-CaptureJoint.targetPosition = Vector3.Slerp(CaptureJointTargetPosition, CaptureJointWoherIchKomme, _rotStep);
+					LatchJoint.targetRotation = Quaternion.Slerp(LatchJointTargetRotation, Quaternion.identity, latchProgress);
+					LatchJoint.targetPosition = Vector3.Lerp(LatchJointTargetPosition, LatchJointInitialPosition, latchProgress);
 				}
 			};
 			st_latching.OnLeave = delegate(KFSMState to)
 			{
+				if(to != st_prelatched)
+					Events["Release"].active = false;
 			};
 			fsm.AddState(st_latching);
 
 			st_prelatched = new KFSMState("Pre Latched");
 			st_prelatched.OnEnter = delegate(KFSMState from)
 			{
-	//			Events["Release"].active = true;
+				Events["Release"].active = true;
 
-				iPos = 10;
+				latchRelaxCounter = 10;
 
-	//			if(part.GetComponent<ModuleAnimateGeneric>().Progress > 0f)
-	//			part.GetComponent<ModuleAnimateGeneric>().Toggle();
+				DockStatus = st_prelatched.name;
 			};
 			st_prelatched.OnFixedUpdate = delegate
 			{
-				if(--iPos < 0)
+				if(--latchRelaxCounter < 0)
 				{
-					Events["Release"].active = true;
-
 					fsm.RunEvent(on_latch);
 					otherPort.fsm.RunEvent(otherPort.on_latch_passive);
 				}
 			};
 			st_prelatched.OnLeave = delegate(KFSMState to)
 			{
-// FEHLER, evtl. noch relaxing machen, wenn gleiches Schiff?
-
-/*
-				DockToVessel(otherPort);
-
-				Destroy(CaptureJoint);
-				CaptureJoint = null;
-*/
-		//		otherPort.fsm.RunEvent(otherPort.on_dock);
+				if(to != st_latched)
+					Events["Release"].active = false;
 			};
 			fsm.AddState(st_prelatched);
 		
@@ -677,16 +639,21 @@ CaptureJoint.targetPosition = Vector3.Slerp(CaptureJointTargetPosition, CaptureJ
 				Events["Undock"].active = false;
 
 				JointDrive angularDrive = new JointDrive { maximumForce = PhysicsGlobals.JointForce, positionSpring = 60000f, positionDamper = 0f };
-				CaptureJoint.angularXDrive = CaptureJoint.angularYZDrive = CaptureJoint.slerpDrive = angularDrive;
+				LatchJoint.angularXDrive = LatchJoint.angularYZDrive = LatchJoint.slerpDrive = angularDrive;
 
 				JointDrive linearDrive = new JointDrive { maximumForce = PhysicsGlobals.JointForce, positionSpring = PhysicsGlobals.JointForce, positionDamper = 0f };
-				CaptureJoint.xDrive = CaptureJoint.yDrive = CaptureJoint.zDrive = linearDrive;
+				LatchJoint.xDrive = LatchJoint.yDrive = LatchJoint.zDrive = linearDrive;
+
+				DockStatus = st_latched.name;
 			};
 			st_latched.OnFixedUpdate = delegate
 			{
 			};
 			st_latched.OnLeave = delegate(KFSMState to)
 			{
+				Events["Release"].active = false;
+
+				Events["Dock"].active = false;
 			};
 			fsm.AddState(st_latched);
 
@@ -699,12 +666,14 @@ CaptureJoint.targetPosition = Vector3.Slerp(CaptureJointTargetPosition, CaptureJ
 				Events["Dock"].active = false;
 
 				part.GetComponent<ModuleAnimateGeneric>().Toggle();
+
+				DockStatus = st_unlatching.name;
 			};
 			st_unlatching.OnFixedUpdate = delegate
 			{
 				if(part.GetComponent<ModuleAnimateGeneric>().Progress == 1f)
 				{
-					DestroyCaptureJoint();
+					DestroyLatchJoint();
 
 					if(otherPort != null)
 						otherPort.fsm.RunEvent(otherPort.on_release_passive);
@@ -723,7 +692,7 @@ CaptureJoint.targetPosition = Vector3.Slerp(CaptureJointTargetPosition, CaptureJ
 					maximumForce = PhysicsGlobals.JointForce
 				};
 
-					CaptureJoint.xDrive = CaptureJoint.yDrive = CaptureJoint.zDrive = drive;
+					LatchJoint.xDrive = LatchJoint.yDrive = LatchJoint.zDrive = drive;
 				}
 			};
 			st_unlatching.OnLeave = delegate(KFSMState to)
@@ -735,10 +704,9 @@ CaptureJoint.targetPosition = Vector3.Slerp(CaptureJointTargetPosition, CaptureJ
 			st_docked = new KFSMState("Docked");
 			st_docked.OnEnter = delegate(KFSMState from)
 			{
-				Events["Release"].active = false;
-
-				Events["Dock"].active = false;
 				Events["Undock"].active = true;
+
+				DockStatus = st_docked.name;
 			};
 			st_docked.OnFixedUpdate = delegate
 			{
@@ -752,9 +720,9 @@ CaptureJoint.targetPosition = Vector3.Slerp(CaptureJointTargetPosition, CaptureJ
 			st_preattached = new KFSMState("Attached");
 			st_preattached.OnEnter = delegate(KFSMState from)
 			{
-				Events["Release"].active = false;
-
 				Events["Undock"].active = true;
+
+				DockStatus = st_preattached.name;
 			};
 			st_preattached.OnFixedUpdate = delegate
 			{
@@ -770,6 +738,8 @@ CaptureJoint.targetPosition = Vector3.Slerp(CaptureJointTargetPosition, CaptureJ
 			{
 				Events["TogglePort"].guiName = "Activate End Effector";
 				Events["TogglePort"].active = true;
+
+				DockStatus = st_disabled.name;
 			};
 			st_disabled.OnFixedUpdate = delegate
 			{
@@ -840,63 +810,13 @@ CaptureJoint.targetPosition = Vector3.Slerp(CaptureJointTargetPosition, CaptureJ
 			fsm.AddEvent(on_disable, st_active);
 		}
 
-		// calculate position and orientation for st_capture
-		void CalculateCaptureJointRotationAndPosition(ModuleTrunnionPins port, out Quaternion rotation, out Vector3 position)
-		{
-			Vector3 tvref =
-				transform.InverseTransformDirection(nodeTransform.TransformDirection(dockingOrientation));
-
-			Vector3 portDockingOrientation = port.nodeTransform.TransformDirection(port.dockingOrientation);
-			Vector3 tv = transform.InverseTransformDirection(portDockingOrientation);
-
-			float angle = 0f;
-
-			Vector3.SignedAngle(
-				nodeTransform.forward, port.nodeTransform.forward,
-				nodeTransform.up);
-
-			for(int i = 1; i < snapCount; i++)
-			{
-				float ff = (360f / snapCount) * i;
-
-				Vector3 tv2 = transform.InverseTransformDirection(Quaternion.AngleAxis(ff, port.nodeTransform.forward) * portDockingOrientation);
-
-				if(Vector3.Angle(tv, tvref) > Vector3.Angle(tv2, tvref))
-				{
-					tv = tv2;
-					angle = ff;
-				}
-			}
-
-//			angle /= (360f / snapCount);
-//			angle = Mathf.Round(angle);
-
-//			angle = ((int)angle % snapCount) * (360f / snapCount);
-
-			Quaternion qt = Quaternion.LookRotation(transform.InverseTransformDirection(nodeTransform.forward), transform.InverseTransformDirection(nodeTransform.TransformDirection(dockingOrientation)));
-			Quaternion qc = Quaternion.LookRotation(transform.InverseTransformDirection(-port.nodeTransform.forward), tv);
-//			Quaternion qt = Quaternion.Inverse(transform.rotation) * portTransform.rotation;
-//			Quaternion qc = Quaternion.AngleAxis(
-//				angle,
-//				Quaternion.Inverse(transform.rotation) * portTransform.up);
-
-			rotation = qt * Quaternion.Inverse(qc);
-
-
-			Vector3 diff = port.nodeTransform.position - nodeTransform.position;
-		//	Vector3 difflp = Vector3.ProjectOnPlane(diff, transform.forward);
-
-			position = -transform.InverseTransformDirection(diff);
-		}
-
-		private void BuildCaptureJoint(ModuleTrunnionPins port)
+		private void BuildLatchJoint(ModuleTrunnionPins port)
 		{
 		// FEHLER, müsste doch schon gesetzt sein... aber gut...
 			otherPort = port;
 			dockedPartUId = otherPort.part.flightID;
 
 			otherPort.otherPort = this;
-			otherPort.dockedPartUId = part.flightID;
 
 			// Joint
 			ConfigurableJoint joint = gameObject.AddComponent<ConfigurableJoint>();
@@ -936,28 +856,69 @@ joint.enableCollision = true; // FEHLER, hier brauch ich das wohl ... -> klären
 			joint.angularXDrive = joint.angularYZDrive = joint.slerpDrive = drive;
 			joint.xDrive = joint.yDrive = joint.zDrive = drive;
 
-			CaptureJoint = joint;
+			LatchJoint = joint;
 
 			DockDistance = "-";
 			DockAngle = "-";
 		}
 
-		private void BuildCaptureJoint2()
+		private void CalculateLatchJointTarget()
 		{
-			CalculateCaptureJointRotationAndPosition(otherPort, out CaptureJointTargetRotation, out CaptureJointTargetPosition);
-			_rotStep = 1f;
+			Vector3 targetPosition; Quaternion targetRotation;
+			DockingHelper.CalculateDockingPositionAndRotation(this, otherPort, out targetPosition, out targetRotation);
+
+			// convert values from org-values to real values (for latching we need real values, for docking org-values)
+			targetPosition +=
+				otherPort.GetPart().transform.position
+				- (otherPort.GetPart().vessel.transform.position + otherPort.GetPart().vessel.transform.rotation * otherPort.GetPart().orgPos);
+
+			targetRotation *=
+				Quaternion.Inverse(otherPort.GetPart().vessel.transform.rotation * otherPort.GetPart().orgRot)
+				* otherPort.GetPart().transform.rotation;
+
+			// invert both values
+			LatchJointTargetPosition = -transform.InverseTransformPoint(targetPosition);
+			LatchJointTargetRotation = Quaternion.Inverse(Quaternion.Inverse(transform.rotation) * targetRotation);
 		}
 
-		private void DestroyCaptureJoint()
+		private void DestroyLatchJoint()
 		{
 			// Joint
-			Destroy(CaptureJoint);
-			CaptureJoint = null;
+			Destroy(LatchJoint);
+			LatchJoint = null;
 
-			// FEHLER, nur mal so 'ne Idee... weiss nicht ob das gut sit
+			// FEHLER, nur mal so 'ne Idee... weiss nicht ob das gut ist
 
 			vessel.ResetRBAnchor();
 			if(otherPort) otherPort.vessel.ResetRBAnchor();
+		}
+
+		internal void UpdateDimension()
+		{
+			Transform Base000 = KSPUtil.FindInPartModel(transform, "Base.000");
+			Transform Base001 = KSPUtil.FindInPartModel(transform, "Base.001");
+			Transform Base002 = KSPUtil.FindInPartModel(transform, "Base.002");
+			Transform Base003 = KSPUtil.FindInPartModel(transform, "Base.003");
+
+			Vector3 Pos000 = Base000.localPosition;
+			Pos000.x = length * 0.5f;
+			Pos000.z = -1.334f - width * 0.5f;
+			Base000.localPosition = Pos000;
+
+			Vector3 Pos001 = Base001.localPosition;
+			Pos001.x = -length * 0.5f;
+			Pos001.z = -1.334f - width * 0.5f;
+			Base001.localPosition = Pos001;
+
+			Vector3 Pos002 = Base002.localPosition;
+			Pos002.x = length * 0.5f;
+			Pos002.z = 1.334f + width * 0.5f;
+			Base002.localPosition = Pos002;
+
+			Vector3 Pos003 = Base003.localPosition;
+			Pos003.x = -length * 0.5f;
+			Pos003.z = 1.334f + width * 0.5f;
+			Base003.localPosition = Pos003;
 		}
 
 		////////////////////////////////////////
@@ -969,19 +930,9 @@ joint.enableCollision = true; // FEHLER, hier brauch ich das wohl ... -> klären
 			{
 				if(vessel && !vessel.packed)
 				{
-
-				if((fsm != null) && fsm.Started)
-					fsm.FixedUpdateFSM();
-
+					if((fsm != null) && fsm.Started)
+						fsm.FixedUpdateFSM();
 				}
-/*
-				if(vessel.packed && followOtherPort)
-				{
-					vessel.SetRotation(otherPort.part.transform.rotation * otherPortRelativeRotation, true);
-					vessel.SetPosition(otherPort.part.transform.position + otherPort.part.transform.rotation * otherPortRelativePosition, false);
-				//	vessel.IgnoreGForces(5);
-				}
-*/
 			}
 		}
 
@@ -991,13 +942,8 @@ joint.enableCollision = true; // FEHLER, hier brauch ich das wohl ... -> klären
 			{
 				if(vessel && !vessel.packed)
 				{
-
-				if((fsm != null) && fsm.Started)
-				{
-					fsm.UpdateFSM();
-					DockStatus = fsm.currentStateName;
-				}
-
+					if((fsm != null) && fsm.Started)
+						fsm.UpdateFSM();
 				}
 			}
 		}
@@ -1008,9 +954,8 @@ joint.enableCollision = true; // FEHLER, hier brauch ich das wohl ... -> klären
 			{
 				if(vessel && !vessel.packed)
 				{
-
-				if((fsm != null) && fsm.Started)
-					fsm.LateUpdateFSM();
+					if((fsm != null) && fsm.Started)
+						fsm.LateUpdateFSM();
 				}
 			}
 		}
@@ -1018,62 +963,24 @@ joint.enableCollision = true; // FEHLER, hier brauch ich das wohl ... -> klären
 		////////////////////////////////////////
 		// Settings
 
-		[KSPAxisField(isPersistant = true, guiActive = false, guiActiveEditor = true, guiName = "Length", guiFormat = "F2",
+		[KSPAxisField(isPersistant = true, guiActive = false, guiActiveEditor = true, guiName = "Length", guiFormat = "F3",
 			axisMode = KSPAxisMode.Incremental, minValue = 0.6f, maxValue = 8f),
-			UI_FloatRange(minValue = 0.6f, maxValue = 8f, stepIncrement = 0.01f, suppressEditorShipModified = true, affectSymCounterparts = UI_Scene.All)]
+			UI_FloatRange(minValue = 0.6f, maxValue = 8f, stepIncrement = 0.001f, suppressEditorShipModified = true, affectSymCounterparts = UI_Scene.All)]
 		public float length = 2f;
 
 		private void onChanged_length(object o)
 		{
-			Transform Base000 = KSPUtil.FindInPartModel(transform, "Base.000");
-			Transform Base001 = KSPUtil.FindInPartModel(transform, "Base.001");
-			Transform Base002 = KSPUtil.FindInPartModel(transform, "Base.002");
-			Transform Base003 = KSPUtil.FindInPartModel(transform, "Base.003");
-
-			Vector3 Pos000 = Base000.localPosition;
-			Pos000.x = length * 0.5f;
-			Base000.localPosition = Pos000;
-
-			Vector3 Pos001 = Base001.localPosition;
-			Pos001.x = -length * 0.5f;
-			Base001.localPosition = Pos001;
-
-			Vector3 Pos002 = Base002.localPosition;
-			Pos002.x = length * 0.5f;
-			Base002.localPosition = Pos002;
-
-			Vector3 Pos003 = Base003.localPosition;
-			Pos003.x = -length * 0.5f;
-			Base003.localPosition = Pos003;
+			UpdateDimension();
 		}
 
-		[KSPAxisField(isPersistant = true, guiActive = false, guiActiveEditor = true, guiName = "Width", guiFormat = "F2",
+		[KSPAxisField(isPersistant = true, guiActive = false, guiActiveEditor = true, guiName = "Width", guiFormat = "F3",
 			axisMode = KSPAxisMode.Incremental, minValue = -0.6f, maxValue = 0.6f),
-			UI_FloatRange(minValue = -0.6f, maxValue = 0.6f, stepIncrement = 0.01f, suppressEditorShipModified = true, affectSymCounterparts = UI_Scene.All)]
+			UI_FloatRange(minValue = -0.6f, maxValue = 0.6f, stepIncrement = 0.001f, suppressEditorShipModified = true, affectSymCounterparts = UI_Scene.All)]
 		public float width = 0f;
 
 		private void onChanged_width(object o)
 		{
-			Transform Base000 = KSPUtil.FindInPartModel(transform, "Base.000");
-			Transform Base001 = KSPUtil.FindInPartModel(transform, "Base.001");
-			Transform Base002 = KSPUtil.FindInPartModel(transform, "Base.002");
-			Transform Base003 = KSPUtil.FindInPartModel(transform, "Base.003");
-
-			Vector3 Pos000 = Base000.localPosition;
-			Pos000.z = -1.334f - width * 0.5f;
-			Base000.localPosition = Pos000;
-
-			Vector3 Pos001 = Base001.localPosition;
-			Pos001.z = -1.334f - width * 0.5f;
-			Base001.localPosition = Pos001;
-
-			Vector3 Pos002 = Base002.localPosition;
-			Pos002.z = 1.334f + width * 0.5f;
-			Base002.localPosition = Pos002;
-
-			Vector3 Pos003 = Base003.localPosition;
-			Pos003.z = 1.334f + width * 0.5f;
-			Base003.localPosition = Pos003;
+			UpdateDimension();
 		}
 
 		////////////////////////////////////////
@@ -1107,7 +1014,6 @@ joint.enableCollision = true; // FEHLER, hier brauch ich das wohl ... -> klären
 				fsm.RunEvent(on_disable);
 		}
 
-	// das ist das pull-back und eine Drehung (gleichzeitig)
 		[KSPEvent(guiActive = true, guiActiveUnfocused = false, guiName = "Latch")]
 		public void Latch()
 		{
@@ -1123,24 +1029,11 @@ joint.enableCollision = true; // FEHLER, hier brauch ich das wohl ... -> klären
 		[KSPEvent(guiActive = true, guiActiveUnfocused = false, guiName = "Dock")]
 		public void Dock()
 		{
-			DockToVessel(otherPort);
+			Debug.Log("Docking to vessel " + otherPort.vessel.GetDisplayName(), gameObject);
 
-			Destroy(CaptureJoint);
-			CaptureJoint = null;
-
-			fsm.RunEvent(on_dock);
-			otherPort.fsm.RunEvent(otherPort.on_dock_passive);
-		}
-
-		public void DockToVessel(ModuleTrunnionPins port)
-		{
-			Debug.Log("Docking to vessel " + port.vessel.GetDisplayName(), gameObject);
-
-			otherPort = port;
 			dockedPartUId = otherPort.part.flightID;
 
 			otherPort.otherPort = this;
-			otherPort.dockedPartUId = part.flightID;
 
 			DockingHelper.SaveCameraPosition(part);
 			DockingHelper.SuspendCameraSwitch(10);
@@ -1151,19 +1044,12 @@ joint.enableCollision = true; // FEHLER, hier brauch ich das wohl ... -> klären
 				DockingHelper.DockVessels(otherPort, this);
 
 			DockingHelper.RestoreCameraPosition(part);
-		}
 
-		private void DoUndock()
-		{
-			DockingHelper.SaveCameraPosition(part);
-			DockingHelper.SuspendCameraSwitch(10);
+			Destroy(LatchJoint);
+			LatchJoint = null;
 
-			DockingHelper.UndockVessels(this, otherPort);
-
-			BuildCaptureJoint(otherPort);
-			BuildCaptureJoint2();
-
-			DockingHelper.RestoreCameraPosition(part);
+			fsm.RunEvent(on_dock);
+			otherPort.fsm.RunEvent(otherPort.on_dock_passive);
 		}
 
 		[KSPEvent(guiActive = true, guiActiveUnfocused = true, externalToEVAOnly = true, unfocusedRange = 2f, guiName = "#autoLOC_6001445")]
@@ -1172,7 +1058,15 @@ joint.enableCollision = true; // FEHLER, hier brauch ich das wohl ... -> klären
 			Vessel oldvessel = vessel;
 			uint referenceTransformId = vessel.referenceTransformId;
 
-			DoUndock();
+			DockingHelper.SaveCameraPosition(part);
+			DockingHelper.SuspendCameraSwitch(10);
+
+			DockingHelper.UndockVessels(this, otherPort);
+
+			DockingHelper.RestoreCameraPosition(part);
+
+			BuildLatchJoint(otherPort);
+			CalculateLatchJointTarget();
 
 			otherPort.fsm.RunEvent(otherPort.on_undock_passive);
 			fsm.RunEvent(on_undock);
@@ -1243,6 +1137,29 @@ joint.enableCollision = true; // FEHLER, hier brauch ich das wohl ... -> klären
 				((dockInfo.part == (IDockable)this) ? dockInfo.vesselInfo : dockInfo.targetVesselInfo);
 		}
 
+		// returns true, if the port is (active and) ready to dock with an other (passive) port
+		public bool IsReadyFor(IDockable otherPort)
+		{
+			if(otherPort != null)
+			{
+				ModuleTrunnionPins _otherPort = otherPort.GetPart().GetComponent<ModuleTrunnionPins>();
+
+				if(!_otherPort)
+					return false;
+
+				if(!nodeTypesAcceptedS.Contains(_otherPort.nodeType)
+				|| !_otherPort.nodeTypesAcceptedS.Contains(nodeType))
+					return false;
+			}
+
+			return (fsm.CurrentState == st_active);
+		}
+
+		public ITargetable GetTargetable()
+		{
+			return (ITargetable)this;
+		}
+
 		public bool IsDocked()
 		{
 			return ((fsm.CurrentState == st_docked) || (fsm.CurrentState == st_preattached));
@@ -1251,6 +1168,85 @@ joint.enableCollision = true; // FEHLER, hier brauch ich das wohl ... -> klären
 		public IDockable GetOtherDockable()
 		{
 			return IsDocked() ? (IDockable)otherPort : null;
+		}
+
+		////////////////////////////////////////
+		// ITargetable
+
+		public Transform GetTransform()
+		{
+			return nodeTransform;
+		}
+
+		public Vector3 GetObtVelocity()
+		{
+			return base.vessel.obt_velocity;
+		}
+
+		public Vector3 GetSrfVelocity()
+		{
+			return base.vessel.srf_velocity;
+		}
+
+		public Vector3 GetFwdVector()
+		{
+			return nodeTransform.forward;
+		}
+
+		public Vessel GetVessel()
+		{
+			return vessel;
+		}
+
+		public string GetName()
+		{
+			return portName;
+		}
+
+		public string GetDisplayName()
+		{
+			return GetName();
+		}
+
+		public Orbit GetOrbit()
+		{
+			return vessel.orbit;
+		}
+
+		public OrbitDriver GetOrbitDriver()
+		{
+			return vessel.orbitDriver;
+		}
+
+		public VesselTargetModes GetTargetingMode()
+		{
+			return VesselTargetModes.DirectionVelocityAndOrientation;
+		}
+
+		public bool GetActiveTargetable()
+		{
+			return false;
+		}
+
+		private DockingPortRenameDialog renameDialog;
+
+		[KSPEvent(guiActive = true, guiActiveUnfocused = true, guiName = "Rename Port")]
+		public void Rename()
+		{
+			InputLockManager.SetControlLock("dockingPortRenameDialog");
+
+			renameDialog = DockingPortRenameDialog.Spawn(portName, onPortRenameAccept, onPortRenameCancel);
+		}
+
+		private void onPortRenameAccept(string newPortName)
+		{
+			portName = newPortName;
+			onPortRenameCancel();
+		}
+
+		private void onPortRenameCancel()
+		{
+			InputLockManager.RemoveControlLock("dockingPortRenameDialog");
 		}
 
 		////////////////////////////////////////

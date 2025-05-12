@@ -1,26 +1,22 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Collections;
+using System.Collections.Generic;
 
 using UnityEngine;
 
 using DockingFunctions;
 
+using PayloadRetentionSystemNext.Utility;
+
+
 namespace PayloadRetentionSystemNext.Module
 {
-	// FEHLER, Crossfeed noch einrichten... und halt umbauen auf FSM? ... ja, zum Spass... shit ey
-
-	// FEHLER, wir arbeiten bei den Events nie mit "OnCheckCondition" sondern lösen alle manuell aus... kann man sich fragen, ob das gut ist, aber so lange der Event nur von einem Zustand her kommen kann, spielt das wie keine Rolle
-
 	public class ModuleTrunnionPins : PartModule, IDockable, ITargetable, IModuleInfo
 	{
 		// Settings
 
 		[KSPField(isPersistant = false), SerializeField]
 		public string nodeTransformName = "TrunnionPinsNode";
-
-		[KSPField(isPersistant = false), SerializeField]
-		public string controlTransformName = "";
 
 		[KSPField(isPersistant = false), SerializeField]
 		public Vector3 dockingOrientation = Vector3.right; // defines the direction of the docking port (when docked at a 0° angle, these local vectors of two ports point into the same direction)
@@ -30,13 +26,13 @@ namespace PayloadRetentionSystemNext.Module
 
 
 		[KSPField(isPersistant = false)]
-		public bool gendered = true;
+		public string nodeType = "TrunnionPin";
 
-		[KSPField(isPersistant = false)]
-		public bool genderFemale = false;
+		[KSPField(isPersistant = false), SerializeField]
+		private string nodeTypesAccepted = "Trunnion";
 
-		[KSPField(isPersistant = false)]
-		public string nodeType = "Trunnion";
+		public HashSet<string> nodeTypesAcceptedS = null;
+
 
 		[KSPField(isPersistant = false)]
 		public float breakingForce = 10f;
@@ -44,9 +40,16 @@ namespace PayloadRetentionSystemNext.Module
 		[KSPField(isPersistant = false)]
 		public float breakingTorque = 10f;
 
-		[KSPField(isPersistant = false)]
-		public string nodeName = "";				// FEHLER, mal sehen wozu wir den dann nutzen könnten
 
+		[KSPField(guiFormat = "S", guiActive = true, guiActiveEditor = true, guiName = "Port Name")]
+		public string portName = "";
+
+		// Construction
+
+		public ModuleTrunnionPins companion = null;
+		public uint companionPartUId;
+
+		public Vector3 companionOffset = Vector3.zero;
 
 		// Docking and Status
 
@@ -54,11 +57,10 @@ namespace PayloadRetentionSystemNext.Module
 		public BaseEvent evtUnsetTarget;
 
 		public Transform nodeTransform;
-		public Transform controlTransform;
-
-//		public Transform portTransform; // FEHLER, neue Idee -> und, wozu sind die anderen da oben eigentlich gut?
 
 		public KerbalFSM fsm;
+
+		public KFSMState st_inoperable;
 
 		public KFSMState st_passive;
 
@@ -88,8 +90,6 @@ namespace PayloadRetentionSystemNext.Module
 		// Capturing / Docking
 
 		public ModuleTrunnionLatches otherPort;
-		public uint dockedPartUId;
-
 		public DockedVesselInfo vesselInfo;
 
 		////////////////////////////////////////
@@ -116,39 +116,24 @@ namespace PayloadRetentionSystemNext.Module
 			}
 			else // I assume, that I'm the prefab then
 			{
-				Transform Plate000 = KSPUtil.FindInPartModel(transform, "Plate.000");
-				Transform Plate001 = KSPUtil.FindInPartModel(transform, "Plate.001");
-				Transform Plate002 = KSPUtil.FindInPartModel(transform, "Plate.002");
-				Transform Plate003 = KSPUtil.FindInPartModel(transform, "Plate.003");
+				SetVisibility(portMode >= 2);
 
-				Vector3 Pos000 = Plate000.localPosition;
-				Pos000.x = length;
-				Pos000.z = -1.231f - width;
-				Plate000.localPosition = Pos000;
-
-				Vector3 Pos001 = Plate001.localPosition;
-				Pos001.x = -length;
-				Pos001.z = -1.231f - width;
-				Plate001.localPosition = Pos001;
-
-				Vector3 Pos002 = Plate002.localPosition;
-				Pos002.x = length;
-				Pos002.z = 1.231f + width;
-				Plate002.localPosition = Pos002;
-
-				Vector3 Pos003 = Plate003.localPosition;
-				Pos003.x = -length;
-				Pos003.z = 1.231f + width;
-				Plate003.localPosition = Pos003;
+				UpdateDimension();
+				UpdatePosition();
+				UpdateRotation();
+				UpdateNode();
 			}
+
+			if(node.HasValue("companionUId"))
+				companionPartUId = uint.Parse(node.GetValue("companionUId"));
+
+			if(node.HasValue("companionOffset"))
+				companionOffset = ConfigNode.ParseVector3(node.GetValue("companionOffset"));
 
 			if(node.HasValue("state"))
 				DockStatus = node.GetValue("state");
 			else
 				DockStatus = "Ready";
-
-			if(node.HasValue("dockUId"))
-				dockedPartUId = uint.Parse(node.GetValue("dockUId"));
 
 			if(node.HasNode("DOCKEDVESSEL"))
 			{
@@ -161,9 +146,13 @@ namespace PayloadRetentionSystemNext.Module
 		{
 			base.OnSave(node);
 
-			node.AddValue("state", (string)(((fsm != null) && (fsm.Started)) ? fsm.currentStateName : DockStatus));
+			if(companion)
+			{
+				node.AddValue("companionUId", companionPartUId);
+				node.AddValue("companionOffset", companionOffset);
+			}
 
-			node.AddValue("dockUId", dockedPartUId);
+			node.AddValue("state", (string)(((fsm != null) && (fsm.Started)) ? fsm.currentStateName : DockStatus));
 
 			if(vesselInfo != null)
 				vesselInfo.Save(node.AddNode("DOCKEDVESSEL"));
@@ -173,59 +162,88 @@ namespace PayloadRetentionSystemNext.Module
 		{
 			base.OnStart(state);
 
-			evtSetAsTarget = base.Events["SetAsTarget"];
-			evtUnsetTarget = base.Events["UnsetTarget"];
+			nodeTypesAcceptedS = new HashSet<string>();
 
-			nodeTransform = base.part.FindModelTransform(nodeTransformName);
-			if(!nodeTransform)
-			{
-				Debug.LogWarning("[Docking Node Module]: WARNING - No node transform found with name " + nodeTransformName, base.part.gameObject);
-				return;
-			}
-			if(controlTransformName == string.Empty)
-				controlTransform = base.part.transform;
-			else
-			{
-				controlTransform = base.part.FindModelTransform(controlTransformName);
-				if(!controlTransform)
-				{
-					Debug.LogWarning("[Docking Node Module]: WARNING - No control transform found with name " + controlTransformName, base.part.gameObject);
-					controlTransform = base.part.transform;
-				}
-			}
+			string[] values = nodeTypesAccepted.Split(new char[2] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+			foreach(string s in values)
+				nodeTypesAcceptedS.Add(s);
 
-//			portTransform = part.FindAttachNode("TrunnionPinsNode").nodeTransform;
+			if(portName == string.Empty)
+				portName = part.partInfo.title;
 
-// FEHLER, Test
-/*fake = new GameObject();
-fake.transform.position = portTransform.position;
-fake.transform.rotation = Quaternion.AngleAxis(180f, -portTransform.right) * portTransform.rotation;
-fake.transform.parent = portTransform;
-fake.SetActive(true);
-fake_nodeTransform = fake.transform;
-*/
 			if(state == StartState.Editor)
 			{
 				Fields["length"].OnValueModified += onChanged_length;
 				Fields["width"].OnValueModified += onChanged_width;
-				Fields["offsetY"].OnValueModified += onChanged_offsetY;
-				Fields["offsetX"].OnValueModified += onChanged_offsetX;
-				Fields["offsetZ"].OnValueModified += onChanged_offsetZ;
+				Fields["offsetY"].OnValueModified += onChanged_offset;
+				Fields["offsetX"].OnValueModified += onChanged_offset;
+				Fields["offsetZ"].OnValueModified += onChanged_offset;
+				Fields["rotationX"].OnValueModified += onChanged_rotation;
+				Fields["rotationY"].OnValueModified += onChanged_rotation;
+				Fields["rotationZ"].OnValueModified += onChanged_rotation;
+			}
+			else
+			{
+				evtSetAsTarget = base.Events["SetAsTarget"];
+				evtUnsetTarget = base.Events["UnsetTarget"];
+
+				nodeTransform = base.part.FindModelTransform(nodeTransformName);
+				if(!nodeTransform)
+				{
+					Debug.LogWarning("[Docking Node Module]: WARNING - No node transform found with name " + nodeTransformName, base.part.gameObject);
+					return;
+				}
 			}
 
-			onChanged_length(null);
-			onChanged_width(null);
-			onChanged_offsetY(null);
-			onChanged_offsetX(null);
-			onChanged_offsetZ(null);
+			SetVisibility(portMode >= 2);
+
+			UpdateDimension();
+			UpdatePosition();
+			UpdateRotation();
+			UpdateNode();
 
 			StartCoroutine(WaitAndInitialize(state));
 
-			StartCoroutine(WaitAndInitializeDockingNodeFix());
+	//		StartCoroutine(WaitAndDisableDockingNode());
 		}
 
-		// FEHLER, ist 'n Quickfix, solange der blöde Port noch drüber hängt im Part...
-		public IEnumerator WaitAndInitializeDockingNodeFix()
+		public IEnumerator WaitAndInitialize(StartState st)
+		{
+			yield return null;
+
+			Events["TogglePort"].active = false;
+
+			if(companionPartUId != 0)
+			{
+				Part companionPart;
+
+				while(!(companionPart = FlightGlobals.FindPartByID(companionPartUId)))
+					yield return null;
+
+				companion = companionPart.GetComponent<ModuleTrunnionPins>();
+
+// FEHELR, oder das hier NUR in dieser Funktion tun?
+				UpdateDimension();
+				UpdatePosition();
+				UpdateRotation();
+				UpdateNode();
+			}
+
+			SetupFSM();
+
+			fsm.StartFSM((portMode == 0) ? "Inoperable" : DockStatus);
+
+// FEHLER, ich versuch was -> geht, ist nur fraglich, wieso das nötig ist
+if(st == StartState.Editor)
+			{
+yield return new WaitForFixedUpdate();
+yield return new WaitForFixedUpdate();
+yield return new WaitForFixedUpdate();
+UpdateNode();
+			}
+		}
+	/*
+		public IEnumerator WaitAndDisableDockingNode()
 		{
 			ModuleDockingNode DockingNode = part.FindModuleImplementing<ModuleDockingNode>();
 
@@ -237,37 +255,17 @@ fake_nodeTransform = fake.transform;
 				DockingNode.fsm.RunEvent(DockingNode.on_disable);
 			}
 		}
-
-		public IEnumerator WaitAndInitialize(StartState st)
-		{
-			yield return null;
-
-			Events["TogglePort"].active = false;
-
-//			Events["EnableXFeed"].active = !crossfeed;
-//			Events["DisableXFeed"].active = crossfeed;
-
-			SetupFSM();
-
-			fsm.StartFSM(DockStatus);
-
-// FEHLER, ich versuch was -> geht, ist nur fraglich, wieso das nötig ist
-if(st == StartState.Editor)
-			{
-yield return new WaitForFixedUpdate();
-yield return new WaitForFixedUpdate();
-yield return new WaitForFixedUpdate();
-MoveNode();
-			}
-		}
-
+	*/
 		public void OnDestroy()
 		{
 			Fields["length"].OnValueModified -= onChanged_length;
 			Fields["width"].OnValueModified -= onChanged_width;
-			Fields["offsetY"].OnValueModified -= onChanged_offsetY;
-			Fields["offsetX"].OnValueModified -= onChanged_offsetX;
-			Fields["offsetZ"].OnValueModified -= onChanged_offsetZ;
+			Fields["offsetY"].OnValueModified -= onChanged_offset;
+			Fields["offsetX"].OnValueModified -= onChanged_offset;
+			Fields["offsetZ"].OnValueModified -= onChanged_offset;
+			Fields["rotationX"].OnValueModified -= onChanged_rotation;
+			Fields["rotationY"].OnValueModified -= onChanged_rotation;
+			Fields["rotationZ"].OnValueModified -= onChanged_rotation;
 		}
 
 		////////////////////////////////////////
@@ -277,14 +275,20 @@ MoveNode();
 		{
 			fsm = new KerbalFSM();
 
+			st_inoperable = new KFSMState("Inoperable");		// FEHLER, Idee -> wenn der Port der passive Teil ist -> wobei, dann sollte er die Anzeige vom anderen anzeigen und ihm die Kommandos weiterleiten? oder?
+			st_inoperable.OnEnter = delegate(KFSMState from)
+			{ SetVisibility(false); };
+			fsm.AddState(st_inoperable);
+
 			st_passive = new KFSMState("Ready");
 			st_passive.OnEnter = delegate(KFSMState from)
 			{
 				otherPort = null;
-				dockedPartUId = 0;
 
 				Events["TogglePort"].guiName = "Deactivate Trunnion Pins";
 				Events["TogglePort"].active = true;
+
+				DockStatus = st_passive.name;		
 			};
 			st_passive.OnFixedUpdate = delegate
 			{
@@ -301,6 +305,7 @@ MoveNode();
 			st_approaching_passive = new KFSMState("Approaching");
 			st_approaching_passive.OnEnter = delegate(KFSMState from)
 			{
+				DockStatus = st_approaching_passive.name;		
 			};
 			st_approaching_passive.OnFixedUpdate = delegate
 			{
@@ -313,6 +318,7 @@ MoveNode();
 			st_latched_passive = new KFSMState("Latched");
 			st_latched_passive.OnEnter = delegate(KFSMState from)
 			{
+				DockStatus = st_latched_passive.name;		
 			};
 			st_latched_passive.OnFixedUpdate = delegate
 			{
@@ -322,7 +328,6 @@ MoveNode();
 				if(to == st_passive)
 				{
 					otherPort = null;
-					dockedPartUId = 0;
 				}
 			};
 			fsm.AddState(st_latched_passive);
@@ -330,6 +335,7 @@ MoveNode();
 			st_docked = new KFSMState("Docked");
 			st_docked.OnEnter = delegate(KFSMState from)
 			{
+				DockStatus = st_docked.name;		
 			};
 			st_docked.OnFixedUpdate = delegate
 			{
@@ -339,7 +345,6 @@ MoveNode();
 				if(to == st_passive)
 				{
 					otherPort = null;
-					dockedPartUId = 0;
 				}
 			};
 			fsm.AddState(st_docked);
@@ -347,6 +352,7 @@ MoveNode();
 			st_preattached = new KFSMState("Attached");
 			st_preattached.OnEnter = delegate(KFSMState from)
 			{
+				DockStatus = st_preattached.name;		
 			};
 			st_preattached.OnFixedUpdate = delegate
 			{
@@ -354,7 +360,6 @@ MoveNode();
 			st_preattached.OnLeave = delegate(KFSMState to)
 			{
 				otherPort = null;
-				dockedPartUId = 0;
 			};
 			fsm.AddState(st_preattached);
 
@@ -363,6 +368,8 @@ MoveNode();
 			{
 				Events["TogglePort"].guiName = "Activate Trunnion Pins";
 				Events["TogglePort"].active = true;
+
+				DockStatus = st_disabled.name;		
 			};
 			st_disabled.OnFixedUpdate = delegate
 			{
@@ -383,11 +390,11 @@ MoveNode();
 			on_distance_passive.GoToStateOnEvent = st_passive;
 			fsm.AddEvent(on_distance_passive, st_approaching_passive);
 
-// FEHLER FEHLER, hier bin ich noch unsicher, ob das alles stimmt -> hab den "Captured" rausgenommen, aber weiss nicht, ob alles passt jetzt
 			on_latch_passive = new KFSMEvent("Latched");
 			on_latch_passive.updateMode = KFSMUpdateMode.MANUAL_TRIGGER;
 			on_latch_passive.GoToStateOnEvent = st_latched_passive;
 			fsm.AddEvent(on_latch_passive, st_approaching_passive, st_passive);
+
 
 			on_release_passive = new KFSMEvent("Released");
 			on_release_passive.updateMode = KFSMUpdateMode.MANUAL_TRIGGER;
@@ -417,6 +424,147 @@ MoveNode();
 			fsm.AddEvent(on_disable, st_passive);
 		}
 
+		internal void SetVisibility(bool visible)
+		{
+			UpdateDimension();
+
+			Transform Plate001 = KSPUtil.FindInPartModel(transform, "Plate.001");
+			Transform Plate003 = KSPUtil.FindInPartModel(transform, "Plate.003");
+
+			foreach(MeshRenderer r in Plate001.GetComponentsInChildren<MeshRenderer>())
+				r.enabled = visible;
+
+			foreach(Collider c in Plate001.GetComponentsInChildren<Collider>())
+				c.enabled = visible;
+
+			foreach(MeshRenderer r in Plate003.GetComponentsInChildren<MeshRenderer>())
+				r.enabled = visible;
+			
+			foreach(Collider c in Plate003.GetComponentsInChildren<Collider>())
+				c.enabled = visible;
+
+			// attach-Node entfernen - FEHLER, fehlt?
+
+			AttachNode n = part.FindAttachNode("TrunnionPinsNode");
+
+			if(n != null)
+			{
+				if(visible)
+				{
+					n.nodeType = AttachNode.NodeType.Stack;
+					n.radius = 0.4f;
+				}
+				else
+				{
+					n.nodeType = AttachNode.NodeType.Dock;
+					n.radius = 0.001f;
+				}
+			}
+		}
+
+		internal void UpdateDimension()
+		{
+			Transform Plate000 = KSPUtil.FindInPartModel(transform, "Plate.000");
+			Transform Plate001 = KSPUtil.FindInPartModel(transform, "Plate.001");
+			Transform Plate002 = KSPUtil.FindInPartModel(transform, "Plate.002");
+			Transform Plate003 = KSPUtil.FindInPartModel(transform, "Plate.003");
+
+			if(Plate000)
+			{
+				Vector3 Pos000 = Plate000.localPosition;
+				Pos000.x = (portMode > 0) ? length * 0.5f : 0f;
+				Pos000.z = -1.231f - width * 0.5f;
+				Plate000.localPosition = Pos000;
+			}
+
+			if(Plate001)
+			{
+				Vector3 Pos001 = Plate001.localPosition;
+				Pos001.x = -length * 0.5f;
+				Pos001.z = -1.231f - width * 0.5f;
+				Plate001.localPosition = Pos001;
+			}
+
+			if(Plate002)
+			{
+				Vector3 Pos002 = Plate002.localPosition;
+				Pos002.x = (portMode > 0) ? length * 0.5f : 0f;
+				Pos002.z = 1.231f + width * 0.5f;
+				Plate002.localPosition = Pos002;
+			}
+
+			if(Plate003)
+			{
+				Vector3 Pos003 = Plate003.localPosition;
+				Pos003.x = -length * 0.5f;
+				Pos003.z = 1.231f + width * 0.5f;
+				Plate003.localPosition = Pos003;
+			}
+		}
+
+		internal void UpdatePosition()
+		{
+			Transform Pins = KSPUtil.FindInPartModel(transform, "TrunnionPinsNode").parent;
+			Pins.localPosition = new Vector3(offsetX, offsetY, offsetZ) + companionOffset;
+			UpdateNode();
+		}
+
+		internal void UpdateRotation()
+		{
+			Transform Pins = KSPUtil.FindInPartModel(transform, "TrunnionPinsNode").parent;
+			Pins.localRotation = Quaternion.AngleAxis(rotationX, Vector3.right) * Quaternion.AngleAxis(rotationY, Vector3.up) * Quaternion.AngleAxis(rotationZ, Vector3.forward);
+			UpdateNode();
+		}
+
+		internal void UpdateNode()
+		{
+			part.UpdateAttachNodes();
+		}
+
+// FEHLER, hier das Zeug echt genauer setzen und so... und vor allem die Position prüfen, ob das überhaupt geht, sonst verwerfen
+		internal void SetCompanion(ModuleTrunnionPins other)
+		{
+			if(portMode == 2)
+				return;
+
+			companion = other;
+			other.companion = this;
+
+			// FEHLER, wir gehen im Moment einfach vom optimalen Fall aus -> der andere muss 2 und passiv sein
+
+			companion.portMode = 0; // 2 passiv
+			portMode = 1; // 2 aktiv
+
+			Transform Pins = KSPUtil.FindInPartModel(transform, "TrunnionPinsNode").parent;
+			Transform otherPins = KSPUtil.FindInPartModel(companion.transform, "TrunnionPinsNode").parent;
+
+			// if .x und .z sind nicht 0, oder genug klein, dann abbrechen, weil's nicht passt? wäre das eine Idee?
+
+			companionOffset = Pins.parent.InverseTransformVector(otherPins.position - Pins.position) * 0.5f;
+
+			length = -2f * (Quaternion.Inverse(Pins.localRotation) * companionOffset).x;
+
+			UpdateDimension();
+			UpdatePosition();
+			UpdateNode();
+		}
+
+		internal void ClearCompanion()
+		{
+			if(portMode == 2)
+				return;
+
+			ModuleTrunnionPins _c = companion;
+			companion = null;
+
+			if(_c)
+				_c.ClearCompanion();
+
+			length = 0; // FEHLER, klären, ob das immer 0 sein soll, wenn wir mode 0 oder 1 haben
+
+			UpdatePosition();
+		}
+
 		////////////////////////////////////////
 		// Update-Functions
 
@@ -440,29 +588,24 @@ MoveNode();
 			{
 				if(vessel && !vessel.packed)
 				{
+					if((fsm != null) && fsm.Started)
+						fsm.UpdateFSM();
 
-				if((fsm != null) && fsm.Started)
-				{
-					fsm.UpdateFSM();
-					DockStatus = fsm.currentStateName;
-				}
+					if(FlightGlobals.fetch.VesselTarget == (ITargetable)this)
+					{
+						evtSetAsTarget.active = false;
+						evtUnsetTarget.active = true;
 
-				if(FlightGlobals.fetch.VesselTarget == (ITargetable)this)
-				{
-					evtSetAsTarget.active = false;
-					evtUnsetTarget.active = true;
-
-					if(FlightGlobals.ActiveVessel == vessel)
-						FlightGlobals.fetch.SetVesselTarget(null);
-					else if((FlightGlobals.ActiveVessel.transform.position - nodeTransform.position).sqrMagnitude > 40000f)
-						FlightGlobals.fetch.SetVesselTarget(vessel);
-				}
-				else
-				{
-					evtSetAsTarget.active = true;
-					evtUnsetTarget.active = false;
-				}
-			
+						if(FlightGlobals.ActiveVessel == vessel)
+							FlightGlobals.fetch.SetVesselTarget(null);
+						else if((FlightGlobals.ActiveVessel.transform.position - nodeTransform.position).sqrMagnitude > 40000f)
+							FlightGlobals.fetch.SetVesselTarget(vessel);
+					}
+					else
+					{
+						evtSetAsTarget.active = true;
+						evtUnsetTarget.active = false;
+					}
 				}
 			}
 		}
@@ -473,10 +616,8 @@ MoveNode();
 			{
 				if(vessel && !vessel.packed)
 				{
-
-				if((fsm != null) && fsm.Started)
-					fsm.LateUpdateFSM();
-
+					if((fsm != null) && fsm.Started)
+						fsm.LateUpdateFSM();
 				}
 			}
 		}
@@ -484,194 +625,69 @@ MoveNode();
 		////////////////////////////////////////
 		// Settings
 
-		private bool Is45(Transform Pins)
-		{
-			return Pins.name.Contains("45");
-		}
-
-	//	private bool Is45()
-	//	{
-	//		Transform Pins = KSPUtil.FindInPartModel(transform, "TrunnionPinsNode").parent;
-	//		return Pins.name.Contains("45");
-	//	}
-
-// FEHLER, erste Idee
-		private void MoveNode()
-		{
-			part.UpdateAttachNodes(); // FEHLER, sehen ob's geht... wenn ja -> dessen Code nutzen? um nur unseren zu aktualisieren?
-			return;
-
-
-			int i = 0;
-			while(part.attachNodes[i].id != "TrunnionPinsNode") ++i;
-
-	//		int j = 0;
-	//		while(part.partInfo.partPrefab.attachNodes[j].id != "TrunnionPinsNode") ++j;
-
-			AttachNode node = part.attachNodes[i];
-	//		AttachNode baseNode = part.partInfo.partPrefab.attachNodes[j];
-
-	//		node.position = baseNode.position;
-	//		node.originalPosition = baseNode.originalPosition;
-
-			Transform nodeTransform = KSPUtil.FindInPartModel(transform, "TrunnionPinsNode");
-
-			node.position = nodeTransform.position;
-			node.originalPosition = nodeTransform.position;
-		}
-
-		[KSPAxisField(isPersistant = true, guiActive = false, guiActiveEditor = true, guiName = "Trunnion-Pin Distance (x)", guiFormat = "F2",
+		[KSPAxisField(isPersistant = true, guiActive = false, guiActiveEditor = true, guiName = "Trunnion-Pin Distance (x)", guiFormat = "F3",
 			axisMode = KSPAxisMode.Incremental, minValue = 0.6f, maxValue = 8f),
-			UI_FloatRange(minValue = 0.6f, maxValue = 8f, stepIncrement = 0.01f, suppressEditorShipModified = true, affectSymCounterparts = UI_Scene.All)]
+			UI_FloatRange(minValue = 0.0f, maxValue = 8f, stepIncrement = 0.001f, suppressEditorShipModified = true, affectSymCounterparts = UI_Scene.All)]
 		public float length = 2f;
 
 		private void onChanged_length(object o)
 		{
-			Transform Plate000 = KSPUtil.FindInPartModel(transform, "Plate.000");
-			Transform Plate001 = KSPUtil.FindInPartModel(transform, "Plate.001");
-			Transform Plate002 = KSPUtil.FindInPartModel(transform, "Plate.002");
-			Transform Plate003 = KSPUtil.FindInPartModel(transform, "Plate.003");
-
-			Vector3 Pos000 = Plate000.localPosition;
-			Pos000.x = length * 0.5f;
-			Plate000.localPosition = Pos000;
-
-			Vector3 Pos001 = Plate001.localPosition;
-			Pos001.x = -length * 0.5f;
-			Plate001.localPosition = Pos001;
-
-			Vector3 Pos002 = Plate002.localPosition;
-			Pos002.x = length * 0.5f;
-			Plate002.localPosition = Pos002;
-
-			Vector3 Pos003 = Plate003.localPosition;
-			Pos003.x = -length * 0.5f;
-			Plate003.localPosition = Pos003;
+			UpdateDimension();
 		}
 
-		[KSPAxisField(isPersistant = true, guiActive = false, guiActiveEditor = true, guiName = "Trunnion-Pin Distance (z)", guiFormat = "F2",
+		[KSPAxisField(isPersistant = true, guiActive = false, guiActiveEditor = true, guiName = "Trunnion-Pin Distance (z)", guiFormat = "F3",
 			axisMode = KSPAxisMode.Incremental, minValue = -0.6f, maxValue = 0.6f),
-			UI_FloatRange(minValue = -0.6f, maxValue = 0.6f, stepIncrement = 0.01f, suppressEditorShipModified = true, affectSymCounterparts = UI_Scene.All)]
+			UI_FloatRange(minValue = -0.6f, maxValue = 0.6f, stepIncrement = 0.001f, suppressEditorShipModified = true, affectSymCounterparts = UI_Scene.All)]
 		public float width = 0f;
 
 		private void onChanged_width(object o)
 		{
-			Transform Plate000 = KSPUtil.FindInPartModel(transform, "Plate.000");
-			Transform Plate001 = KSPUtil.FindInPartModel(transform, "Plate.001");
-			Transform Plate002 = KSPUtil.FindInPartModel(transform, "Plate.002");
-			Transform Plate003 = KSPUtil.FindInPartModel(transform, "Plate.003");
-
-			bool is45 = Is45(Plate000.parent);
-
-			Vector3 Pos000 = Plate000.localPosition;
-			if(is45)
-			{
-				Pos000.y = 1.0071f + (0.7071f * width * 0.5f);
-				Pos000.z = -0.7338f - (0.7071f * width * 0.5f);
-			}
-			else
-				Pos000.z = -1.231f - width * 0.5f;
-			Plate000.localPosition = Pos000;
-
-			Vector3 Pos001 = Plate001.localPosition;
-			if(is45)
-			{
-				Pos001.y = 1.0071f + (0.7071f * width * 0.5f);
-				Pos001.z = -0.7338f - (0.7071f * width * 0.5f);
-			}
-			else
-				Pos001.z = -1.231f - width * 0.5f;
-			Plate001.localPosition = Pos001;
-
-			Vector3 Pos002 = Plate002.localPosition;
-			if(is45)
-			{
-				Pos002.y = -0.7338f - (0.7071f * width * 0.5f);
-				Pos002.z = 1.0071f + (0.7071f * width * 0.5f);
-			}
-			else
-				Pos002.z = 1.231f + width * 0.5f;
-			Plate002.localPosition = Pos002;
-
-			Vector3 Pos003 = Plate003.localPosition;
-			if(is45)
-			{
-				Pos003.y = -0.7338f - (0.7071f * width * 0.5f);
-				Pos003.z = 1.0071f + (0.7071f * width * 0.5f);
-			}
-			else
-				Pos003.z = 1.231f + width * 0.5f;
-			Plate003.localPosition = Pos003;
+			UpdateDimension();
 		}
 
-		[KSPAxisField(isPersistant = true, guiActive = false, guiActiveEditor = true, guiName = "Trunnion-Pin Position (y)", guiFormat = "F2",
-			axisMode = KSPAxisMode.Incremental, minValue = -1f, maxValue = 1f),
-			UI_FloatRange(minValue = -1f, maxValue = 1f, stepIncrement = 0.01f, suppressEditorShipModified = true, affectSymCounterparts = UI_Scene.All)]
-		public float offsetY = 0f;
-
-		private void onChanged_offsetY(object o)
-		{
-			Transform Pins = KSPUtil.FindInPartModel(transform, "TrunnionPinsNode").parent;
-
-			Vector3 Pos = Pins.localPosition;
-			Pos.y = offsetY;
-			Pins.localPosition = Pos;
-
-			MoveNode();
-		}
-
-		[KSPAxisField(isPersistant = true, guiActive = false, guiActiveEditor = true, guiName = "Trunnion-Pin Position (x)", guiFormat = "F2",
+		[KSPAxisField(isPersistant = true, guiActive = false, guiActiveEditor = true, guiName = "Trunnion-Pin Position (x)", guiFormat = "F3",
 			axisMode = KSPAxisMode.Incremental, minValue = -2f, maxValue = 2f),
-			UI_FloatRange(minValue = -2f, maxValue = 2f, stepIncrement = 0.01f, suppressEditorShipModified = true, affectSymCounterparts = UI_Scene.All)]
+			UI_FloatRange(minValue = -2f, maxValue = 2f, stepIncrement = 0.001f, suppressEditorShipModified = true, affectSymCounterparts = UI_Scene.All)]
 		public float offsetX = 0f;
 
-		private void onChanged_offsetX(object o)
-		{
-			Transform Pins = KSPUtil.FindInPartModel(transform, "TrunnionPinsNode").parent;
+		[KSPAxisField(isPersistant = true, guiActive = false, guiActiveEditor = true, guiName = "Trunnion-Pin Position (y)", guiFormat = "F3",
+			axisMode = KSPAxisMode.Incremental, minValue = -1f, maxValue = 1f),
+			UI_FloatRange(minValue = -5f, maxValue = 5f, stepIncrement = 0.001f, suppressEditorShipModified = true, affectSymCounterparts = UI_Scene.All)]
+		public float offsetY = 0f;
 
-			Vector3 Pos = Pins.localPosition;
-
-			if(Is45(Pins))
-			{
-				Pos.x = 0.7071f * offsetX;
-				Pos.z = -0.7071f * offsetX;
-			}
-			else
-				Pos.x = offsetX;
-
-			Pins.localPosition = Pos;
-
-			MoveNode();
-		}
-
-		[KSPAxisField(isPersistant = true, guiActive = false, guiActiveEditor = true, guiName = "Trunnion-Pin Position (z)", guiFormat = "F2",
+		[KSPAxisField(isPersistant = true, guiActive = false, guiActiveEditor = true, guiName = "Trunnion-Pin Position (z)", guiFormat = "F3",
 			axisMode = KSPAxisMode.Incremental, minValue = -2f, maxValue = 2f),
-			UI_FloatRange(minValue = -2f, maxValue = 2f, stepIncrement = 0.01f, suppressEditorShipModified = true, affectSymCounterparts = UI_Scene.All)]
+			UI_FloatRange(minValue = -2f, maxValue = 2f, stepIncrement = 0.001f, suppressEditorShipModified = true, affectSymCounterparts = UI_Scene.All)]
 		public float offsetZ = 0f;
 
-		private void onChanged_offsetZ(object o)
+		private void onChanged_offset(object o)
 		{
-			Transform Pins = KSPUtil.FindInPartModel(transform, "TrunnionPinsNode").parent;
+			UpdatePosition();
+		}
 
-			Vector3 Pos = Pins.localPosition;
+		[KSPAxisField(isPersistant = true, guiActive = false, guiActiveEditor = true, guiName = "Trunnion-Pin Rotation (x)", guiFormat = "F1",
+			axisMode = KSPAxisMode.Incremental, minValue = -180f, maxValue = 180f),
+			UI_FloatRange(minValue = -180f, maxValue = 180f, stepIncrement = 0.1f, suppressEditorShipModified = true, affectSymCounterparts = UI_Scene.All)]
+		public float rotationX = 0f;
 
-			if(Is45(Pins))
-			{
-				Pos.x = -0.7071f * offsetZ;
-				Pos.z = 0.7071f * offsetZ;
-			}
-			else
-				Pos.z = offsetZ;
+		[KSPAxisField(isPersistant = true, guiActive = false, guiActiveEditor = true, guiName = "Trunnion-Pin Rotation (y)", guiFormat = "F1",
+			axisMode = KSPAxisMode.Incremental, minValue = -180f, maxValue = 180f),
+			UI_FloatRange(minValue = -180f, maxValue = 180f, stepIncrement = 0.1f, suppressEditorShipModified = true, affectSymCounterparts = UI_Scene.All)]
+		public float rotationY = 0f;
 
-			Pins.localPosition = Pos;
+		[KSPAxisField(isPersistant = true, guiActive = false, guiActiveEditor = true, guiName = "Trunnion-Pin Rotation (z)", guiFormat = "F1",
+			axisMode = KSPAxisMode.Incremental, minValue = -180f, maxValue = 180f),
+			UI_FloatRange(minValue = -180f, maxValue = 180f, stepIncrement = 0.1f, suppressEditorShipModified = true, affectSymCounterparts = UI_Scene.All)]
+		public float rotationZ = 0f;
 
-			MoveNode();
+		private void onChanged_rotation(object o)
+		{
+			UpdateRotation();
 		}
 
 		////////////////////////////////////////
 		// Context Menu
 
-// FEHLER, später total ausblenden, das brauch ich nur für Debugging im Moment
 		[KSPField(guiName = "Trunnion Port status", isPersistant = false, guiActive = true, guiActiveUnfocused = true, unfocusedRange = 20)]
 		public string DockStatus = "Ready";
 
@@ -693,35 +709,36 @@ MoveNode();
 			else
 				fsm.RunEvent(on_disable);
 		}
-/*
-		void DeactivateColliders(Vessel v)
+
+		[KSPField(isPersistant = true)]
+		public int portMode = 2;
+
+		private void onChanged_portMode(object o)
 		{
-			Collider[] colliders = part.transform.GetComponentsInChildren<Collider>(true);
-			CollisionManager.SetCollidersOnVessel(v, true, colliders);
-		}
-/*
-		[KSPEvent(guiActive = true, guiActiveEditor = true, guiName = "#autoLOC_236028")]
-		public void EnableXFeed()
-		{
-			Events["EnableXFeed"].active = false;
-			Events["DisableXFeed"].active = true;
-			bool fuelCrossFeed = part.fuelCrossFeed;
-			part.fuelCrossFeed = (crossfeed = true);
-			if(fuelCrossFeed != crossfeed)
-				GameEvents.onPartCrossfeedStateChange.Fire(base.part);
+			switch(portMode)
+			{
+			case 0:
+				Events["TogglePortMode"].guiName = "Port Mode: 2 Pins - passive"; SetVisibility(false); break;
+			case 1:
+				Events["TogglePortMode"].guiName = "Port Mode: 2 Pins - active"; SetVisibility(false); break;
+			case 2:
+				Events["TogglePortMode"].guiName = "Port Mode: 4 Pins"; SetVisibility(true); break;
+			}
 		}
 
-		[KSPEvent(guiActive = true, guiActiveEditor = true, guiName = "#autoLOC_236030")]
-		public void DisableXFeed()
+		public int PortMode
 		{
-			Events["EnableXFeed"].active = true;
-			Events["DisableXFeed"].active = false;
-			bool fuelCrossFeed = base.part.fuelCrossFeed;
-			base.part.fuelCrossFeed = (crossfeed = false);
-			if(fuelCrossFeed != crossfeed)
-				GameEvents.onPartCrossfeedStateChange.Fire(base.part);
+			get { return portMode; }
+			set { if(portMode == value) return; portMode = value; onChanged_portMode(null); }
 		}
-*/
+
+		[KSPEvent(guiActive = true, guiActiveEditor = true, guiName = "Port Mode: 4 Pins")]
+		public void TogglePortMode()
+		{
+			portMode = (portMode + 1) % 3;
+			onChanged_portMode(null);
+		}
+
 		////////////////////////////////////////
 		// Actions
 
@@ -732,39 +749,9 @@ MoveNode();
 		[KSPAction("Disable")]
 		public void DisableAction(KSPActionParam param)
 		{ Disable(); }
-/*
-		[KSPAction("#autoLOC_236028")]
-		public void EnableXFeedAction(KSPActionParam param)
-		{ EnableXFeed(); }
-
-		[KSPAction("#autoLOC_236030")]
-		public void DisableXFeedAction(KSPActionParam param)
-		{ DisableXFeed(); }
-
-		[KSPAction("#autoLOC_236032")]
-		public void ToggleXFeedAction(KSPActionParam param)
-		{
-			if(crossfeed)
-				DisableXFeed();
-			else
-				EnableXFeed();
-		}
-*/
-		[KSPAction("#autoLOC_6001447")]
-		public void MakeReferenceToggle(KSPActionParam act)
-		{
-			MakeReferenceTransform();
-		}
 
 		////////////////////////////////////////
 		// Reference / Target
-
-		[KSPEvent(guiActive = true, guiName = "#autoLOC_6001447")]
-		public void MakeReferenceTransform()
-		{
-			part.SetReferenceTransform(controlTransform);
-			vessel.SetReferenceTransform(part);
-		}
 
 		[KSPEvent(guiActive = false, guiActiveUnfocused = true, externalToEVAOnly = false, unfocusedRange = 200f, guiName = "#autoLOC_6001448")]
 		public void SetAsTarget()
@@ -786,10 +773,8 @@ MoveNode();
 		public Part GetPart()
 		{ return part; }
 
-//GameObject fake; Transform fake_nodeTransform;
 		public Transform GetNodeTransform()
 		{ return nodeTransform; }
-//		{ return fake_nodeTransform; }
 
 		public Vector3 GetDockingOrientation()
 		{ return dockingOrientation; }
@@ -806,6 +791,29 @@ MoveNode();
 			vesselInfo =
 				(dockInfo == null) ? null :
 				((dockInfo.part == (IDockable)this) ? dockInfo.vesselInfo : dockInfo.targetVesselInfo);
+		}
+
+		// returns true, if the port is (passive and) ready to dock with an other (active) port
+		public bool IsReadyFor(IDockable otherPort)
+		{
+			if(otherPort != null)
+			{
+				ModuleTrunnionLatches _otherPort = otherPort.GetPart().GetComponent<ModuleTrunnionLatches>();
+
+				if(!_otherPort)
+					return false;
+
+				if(!nodeTypesAcceptedS.Contains(_otherPort.nodeType)
+				|| !_otherPort.nodeTypesAcceptedS.Contains(nodeType))
+					return false;
+			}
+
+			return (fsm.CurrentState == st_passive);
+		}
+
+		public ITargetable GetTargetable()
+		{
+			return (ITargetable)this;
 		}
 
 		public bool IsDocked()
@@ -848,7 +856,7 @@ MoveNode();
 
 		public string GetName()
 		{
-			return "name fehlt noch"; // FEHLER, einbauen
+			return portName;
 		}
 
 		public string GetDisplayName()
@@ -874,6 +882,27 @@ MoveNode();
 		public bool GetActiveTargetable()
 		{
 			return false;
+		}
+
+		private DockingPortRenameDialog renameDialog;
+
+		[KSPEvent(guiActive = true, guiActiveUnfocused = true, guiName = "Rename Port")]
+		public void Rename()
+		{
+			InputLockManager.SetControlLock("dockingPortRenameDialog");
+
+			renameDialog = DockingPortRenameDialog.Spawn(portName, onPortRenameAccept, onPortRenameCancel);
+		}
+
+		private void onPortRenameAccept(string newPortName)
+		{
+			portName = newPortName;
+			onPortRenameCancel();
+		}
+
+		private void onPortRenameCancel()
+		{
+			InputLockManager.RemoveControlLock("dockingPortRenameDialog");
 		}
 
 		////////////////////////////////////////
