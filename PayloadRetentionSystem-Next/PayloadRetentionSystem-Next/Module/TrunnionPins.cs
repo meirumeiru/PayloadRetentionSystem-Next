@@ -34,13 +34,6 @@ namespace PayloadRetentionSystemNext.Module
 		public HashSet<string> nodeTypesAcceptedS = null;
 
 
-		[KSPField(isPersistant = false)]
-		public float breakingForce = 10f;
-
-		[KSPField(isPersistant = false)]
-		public float breakingTorque = 10f;
-
-
 		[KSPField(guiFormat = "S", guiActive = true, guiActiveEditor = true, guiName = "Port Name")]
 		public string portName = "";
 
@@ -90,6 +83,8 @@ namespace PayloadRetentionSystemNext.Module
 		// Capturing / Docking
 
 		public ModuleTrunnionLatches otherPort;
+		public uint dockedPartUId;
+
 		public DockedVesselInfo vesselInfo;
 
 		////////////////////////////////////////
@@ -275,7 +270,7 @@ UpdateNode();
 		{
 			fsm = new KerbalFSM();
 
-			st_inoperable = new KFSMState("Inoperable");		// FEHLER, Idee -> wenn der Port der passive Teil ist -> wobei, dann sollte er die Anzeige vom anderen anzeigen und ihm die Kommandos weiterleiten? oder?
+			st_inoperable = new KFSMState("Inoperable");
 			st_inoperable.OnEnter = delegate(KFSMState from)
 			{ SetVisibility(false); };
 			fsm.AddState(st_inoperable);
@@ -793,18 +788,30 @@ UpdateNode();
 				((dockInfo.part == (IDockable)this) ? dockInfo.vesselInfo : dockInfo.targetVesselInfo);
 		}
 
+		// returns true, if the port is compatible with the other port
+		public bool IsCompatible(IDockable otherPort)
+		{
+			if(otherPort == null)
+				return false;
+
+			ModuleTrunnionLatches _otherPort = otherPort.GetPart().GetComponent<ModuleTrunnionLatches>();
+
+			if(!_otherPort)
+				return false;
+
+			if(!nodeTypesAcceptedS.Contains(_otherPort.nodeType)
+			|| !_otherPort.nodeTypesAcceptedS.Contains(nodeType))
+				return false;
+
+			return true;
+		}
+
 		// returns true, if the port is (passive and) ready to dock with an other (active) port
 		public bool IsReadyFor(IDockable otherPort)
 		{
 			if(otherPort != null)
 			{
-				ModuleTrunnionLatches _otherPort = otherPort.GetPart().GetComponent<ModuleTrunnionLatches>();
-
-				if(!_otherPort)
-					return false;
-
-				if(!nodeTypesAcceptedS.Contains(_otherPort.nodeType)
-				|| !_otherPort.nodeTypesAcceptedS.Contains(nodeType))
+				if(!IsCompatible(otherPort))
 					return false;
 			}
 
