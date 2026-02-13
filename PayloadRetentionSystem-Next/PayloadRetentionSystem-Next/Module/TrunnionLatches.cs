@@ -9,9 +9,18 @@ using DockingFunctions;
 
 namespace PayloadRetentionSystemNext.Module
 {
-	public class ModuleTrunnionLatches : PartModule, IDockable, ITargetable, IModuleInfo
+	public class ModuleTrunnionLatches : PartModule, IDockable, ITargetable, IModuleInfo, IResourceConsumer
 	{
 		// Settings
+
+		[KSPField(isPersistant = false)]
+		public string nodeType = "Trunnion";
+
+		[KSPField(isPersistant = false), SerializeField]
+		private string nodeTypesAccepted = "TrunnionPin";
+
+		public HashSet<string> nodeTypesAcceptedS = null;
+
 
 		[KSPField(isPersistant = false), SerializeField]
 		public string nodeTransformName = "TrunnionPortNode";
@@ -33,23 +42,63 @@ namespace PayloadRetentionSystemNext.Module
 		public float approachingDistance = 0.3f;
 
 		[KSPField(isPersistant = false), SerializeField]
-		public float captureDistance = 0.03f;
+		public float approachingAlignment = 15f;
 
-
-		[KSPField(isPersistant = false)]
-		public string nodeType = "Trunnion";
 
 		[KSPField(isPersistant = false), SerializeField]
-		private string nodeTypesAccepted = "TrunnionPin";
+		public float captureDistance = 0.03f;
 
-		public HashSet<string> nodeTypesAcceptedS = null;
+		[KSPField(isPersistant = false), SerializeField]
+		public float captureAlignment = 0.4f;
 
+		[KSPField(isPersistant = false), SerializeField]
+		public float captureAngle = 5f;
+
+
+		[KSPField(isPersistant = false), SerializeField]
+		public float capturingForce = 5000f;
+
+		[KSPField(isPersistant = false), SerializeField]
+		public float captureBreakingForceFactor = 0.02f;
+
+
+		[KSPField(isPersistant = false), SerializeField]
+		public float latchingForce = 500000f;
+static float baseForce = 1000f;	// FEHLER, alt, klären wie das neu kommt
+
+		[KSPField(isPersistant = false), SerializeField]
+		public float latchingBreakingForceFactor = 0.2f;
+
+		[KSPField(isPersistant = false), SerializeField]
+		public float latchingBreakingDistance = 0.006f;
+
+		[KSPField(isPersistant = false), SerializeField]
+		public float latchingBreakingAngle = 1.0f;
 
 		[KSPField(isPersistant = false), SerializeField]
 		public float latchingSpeedRotation = 0.1f; // degrees per second
 
 		[KSPField(isPersistant = false), SerializeField]
 		public float latchingSpeedTranslation = 0.025f; // distance per second
+
+
+		[KSPField(isPersistant = false), SerializeField]
+		public float latchingDistance = 0.002f;
+
+		[KSPField(isPersistant = false), SerializeField]
+		public float latchingAlignment = 0.04f;
+
+		[KSPField(isPersistant = false), SerializeField]
+		public float latchingAngle = 0.04f;
+
+
+		[KSPField(isPersistant = false), SerializeField]
+		private float electricChargeRequiredLatching = 1.5f;
+
+		[KSPField(isPersistant = false), SerializeField]
+		private float electricChargeRequiredReleasing = 0.5f;
+
+		private PartResourceDefinition electricResource = null;
 
 
 		[KSPField(guiFormat = "S", guiActive = true, guiActiveEditor = true, guiName = "Port Name")]
@@ -70,6 +119,9 @@ namespace PayloadRetentionSystemNext.Module
 
 		public KFSMState st_latching;		// orienting and retracting in progress
 		public KFSMState st_prelatched;		// ready to dock
+
+		public KFSMState st_latchfailed;
+
 		public KFSMState st_latched;		// docked
 
 		public KFSMState st_unlatching;		// opening latches
@@ -85,6 +137,9 @@ namespace PayloadRetentionSystemNext.Module
 
 		public KFSMEvent on_latching;
 		public KFSMEvent on_prelatch;
+
+		public KFSMEvent on_latchfailed;
+
 		public KFSMEvent on_latch;
 
 		public KFSMEvent on_unlatching;
@@ -101,18 +156,7 @@ namespace PayloadRetentionSystemNext.Module
 
 		// Sounds
 
-/* FEHLER, Sound fehlt noch total
- * 
-		[KSPField(isPersistant = false)] public string preAttachSoundFilePath = "";
-		[KSPField(isPersistant = false)] public string latchSoundFilePath = "";
-		[KSPField(isPersistant = false)] public string detachSoundFilePath = "";
-		
-		[KSPField(isPersistant = false)] public string activatingSoundFilePath = "";
-		[KSPField(isPersistant = false)] public string activatedSoundFilePath = "";
-		[KSPField(isPersistant = false)] public string deactivatingSoundFilePath = "";
-
-		protected SoundSource soundSound = null;
-*/
+			// option for later
 
 		// Capturing / Docking
 
@@ -123,20 +167,24 @@ namespace PayloadRetentionSystemNext.Module
 
 		private bool inCaptureDistance = false;
 
-		private ConfigurableJoint latchJoint;
+		private ConfigurableJoint joint;
 
-		private float latchJointBreakForce;
-		private float latchJointBreakTorque;
+		private Vector3 jointInitialPosition;
 
-		private Quaternion latchJointTargetRotation;
-		private Vector3 latchJointTargetPosition;
+		private float jointBreakForce;
+		private float jointBreakTorque;
 
-		private Vector3 latchJointInitialPosition;
+		private Quaternion jointTargetRotation;
+		private Vector3 jointTargetPosition;
 
-		private float latchProgress;
-		private float latchProgressStep = 0.0005f;
+		private float jointLastDistance;
+		private float jointLastAlignment;
 
-		private int latchRelaxCounter;
+		private float progress;
+	//	private float progressStep = 0.0005f;
+
+		private int waitCounter;
+		private int relaxCounter;
 
 		// Packed / OnRails
 
@@ -158,14 +206,24 @@ namespace PayloadRetentionSystemNext.Module
 		public override void OnAwake()
 		{
 			part.dockingPorts.AddUnique(this);
+
+
+			electricResource = PartResourceLibrary.Instance.GetDefinition("ElectricCharge");
+
+			if(consumedResources == null)
+				consumedResources = new List<PartResourceDefinition>();
+			else
+				consumedResources.Clear();
+
+			consumedResources.Add(electricResource);
 		}
 
 		public override void OnLoad(ConfigNode node)
 		{
 			base.OnLoad(node);
 
-		//	if(node.HasValue("length"))
-		//		length = float.Parse(node.GetValue("length"));
+			if(node.HasValue("portName"))
+				portName = node.GetValue("portName");
 
 			if(node.HasValue("state"))
 				DockStatus = node.GetValue("state");
@@ -194,7 +252,7 @@ namespace PayloadRetentionSystemNext.Module
 		{
 			base.OnSave(node);
 
-		//	node.AddValue("length", length);
+			node.AddValue("portName", portName);
 
 			node.AddValue("state", (string)(((fsm != null) && (fsm.Started)) ? fsm.currentStateName : DockStatus));
 
@@ -225,26 +283,28 @@ namespace PayloadRetentionSystemNext.Module
 			if(portName == string.Empty)
 				portName = part.partInfo.title;
 
+			UpdateDimension();
+
 			if(state == StartState.Editor)
 			{
 				Fields["length"].OnValueModified += onChanged_length;
 				Fields["width"].OnValueModified += onChanged_width;
+
+				return;
 			}
 
-			UpdateDimension();
-
-			if(state == StartState.Editor)
-				return;
+			evtSetAsTarget = Events["SetAsTarget"];
+			evtUnsetTarget = Events["UnsetTarget"];
 
 			GameEvents.onVesselGoOnRails.Add(OnPack);
 			GameEvents.onVesselGoOffRails.Add(OnUnpack);
 
 			GameEvents.OnEVAConstructionModePartDetached.Add(OnEVAConstructionModePartDetached);
 
-			nodeTransform = base.part.FindModelTransform(nodeTransformName);
+			nodeTransform = part.FindModelTransform(nodeTransformName);
 			if(!nodeTransform)
 			{
-				Debug.LogWarning("[Docking Node Module]: WARNING - No node transform found with name " + nodeTransformName, base.part.gameObject);
+				Logger.Log("No node transform found with name " + nodeTransformName, Logger.Level.Error);
 				return;
 			}
 
@@ -318,11 +378,17 @@ namespace PayloadRetentionSystemNext.Module
 			if(DockStatus == "Pre Latched")
 				DockStatus = "Latching";
 
-			if((DockStatus == "Latched")
-			|| (DockStatus == "Unlatching"))
+		//	if(DockStatus == "Latched") -> do nothing special
+
+			if(DockStatus == "Unlatching")
 			{
-				BuildLatchJoint();
-				CalculateLatchJointTarget();
+				BuildJoint();
+				CalculateJointTarget();
+
+				joint.targetRotation = jointTargetRotation;
+				joint.targetPosition = jointTargetPosition;
+
+				ConfigureJointRigid();
 			}
 
 			if(DockStatus == "Docked")
@@ -411,8 +477,6 @@ namespace PayloadRetentionSystemNext.Module
 		////////////////////////////////////////
 		// Functions
 
-static float baseForce = 1000f;
-
 		public void SetupFSM()
 		{
 			fsm = new KerbalFSM();
@@ -423,14 +487,14 @@ static float baseForce = 1000f;
 				otherPort = null;
 				dockedPartUId = 0;
 
-				Events["TogglePort"].guiName = "Deactivate End Effector";
+				Events["TogglePort"].guiName = "Deactivate Payload Lock";
 				Events["TogglePort"].active = true;
 
 				DockStatus = st_active.name;
 			};
 			st_active.OnFixedUpdate = delegate
 			{
-				Vector3 distance; float angle;
+				float distance; float alignment;
 
 				for(int i = 0; i < FlightGlobals.VesselsLoaded.Count; i++)
 				{
@@ -454,20 +518,29 @@ static float baseForce = 1000f;
 						if(_otherPort == null)
 							continue;
 
+						if(!nodeTypesAcceptedS.Contains(_otherPort.nodeType)
+						|| !_otherPort.nodeTypesAcceptedS.Contains(nodeType))
+							continue;
+
 						if(_otherPort.fsm.CurrentState != _otherPort.st_passive)
 							continue;
 
-						distance = _otherPort.nodeTransform.position - nodeTransform.position;
+						distance = (_otherPort.nodeTransform.position - nodeTransform.position).magnitude;
 
-						if(distance.magnitude < detectionDistance)
+						if(distance < detectionDistance)
 						{
-							angle = Vector3.Angle(nodeTransform.forward, -_otherPort.nodeTransform.forward);
+							DockDistance = distance.ToString();
 
-							DockDistance = distance.magnitude.ToString();
-							DockAngle = "-";
+							alignment = Vector3.Angle(nodeTransform.forward, -_otherPort.nodeTransform.forward);
 
-							if((angle <= 15f) && (distance.magnitude <= approachingDistance))
+							if((alignment <= approachingAlignment) && (distance <= approachingDistance))
 							{
+								DockAlignment = alignment.ToString();
+								DockAngle = "-";
+
+								// we don't expect to see multiple matching ports in the same area
+								// that's why we don't continue to search and simply take the first we find
+
 								otherPort = _otherPort;
 								dockedPartUId = otherPort.part.flightID;
 
@@ -480,6 +553,7 @@ static float baseForce = 1000f;
 				}
 
 				DockDistance = "-";
+				DockAlignment = "-";
 				DockAngle = "-";
 			};
 			st_active.OnLeave = delegate(KFSMState to)
@@ -497,11 +571,13 @@ static float baseForce = 1000f;
 				otherPort.otherPort = this;
 				otherPort.dockedPartUId = part.flightID;
 
+			//	otherPort.fsm.RunEvent(otherPort.on_approach_passive); -> is done manually
+
 				DockStatus = st_approaching.name;
 			};
 			st_approaching.OnFixedUpdate = delegate
 			{
-				if(Mathf.Abs(length - otherPort.length) > 0.01)
+				if(Mathf.Abs(length - otherPort.length) > 0.01)			// FEHLER, hier gar nicht erst einen "Match" zulassen... wozu auch?
 				{
 					DockDistance = "wrong length";
 					DockAngle = "-";
@@ -509,49 +585,34 @@ static float baseForce = 1000f;
 					return;
 				}
 
-				Vector3 distance = otherPort.nodeTransform.position - nodeTransform.position;
+				float distance = (otherPort.nodeTransform.position - nodeTransform.position).magnitude;
+				float alignment = Vector3.Angle(nodeTransform.forward, -otherPort.nodeTransform.forward);
+				float angle = CalculateAngle();
 
-				DockDistance = distance.magnitude.ToString();
+				DockDistance = distance.ToString();
+				DockAlignment = alignment.ToString();
+				DockAngle = angle.ToString();
 
-				if(distance.magnitude < captureDistance)
+				if((distance < captureDistance)
+				&& (alignment < captureAlignment)
+				&& (Mathf.Abs(angle) <= captureAngle))
 				{
-					Vector3 tvref = nodeTransform.TransformDirection(dockingOrientation);
-					Vector3 tv = otherPort.nodeTransform.TransformDirection(otherPort.dockingOrientation);
-//					Vector3 tvref = nodeTransform.right;
-//					Vector3 tv = otherPort.nodeTransform.right;
-					float ang = Vector3.SignedAngle(tvref, tv, -nodeTransform.forward);
+					if(!inCaptureDistance)
+						Events["Latch"].active = true;
 
-					ang = 360f + ang - (180f / snapCount);
-					ang %= (360f / snapCount);
-					ang -= (180f / snapCount);
+					inCaptureDistance = true;
 
-					bool angleok = ((ang > -5f) && (ang < 5f));
-
-					DockAngle = ang.ToString();
-
-					if(angleok)
-					{
-						if(!inCaptureDistance)
-							Events["Latch"].active = true;
-
-						inCaptureDistance = true;
-
-						return;
-					}
+					return;
 				}
-				else
-					DockAngle = "-";
 
 				if(inCaptureDistance)
 					Events["Latch"].active = false;
 
 				inCaptureDistance = false;
 				
-				if(distance.magnitude < 1.5f * approachingDistance)
+				if(distance < 1.5f * approachingDistance)
 				{
-					float angle = Vector3.Angle(nodeTransform.forward, -otherPort.nodeTransform.forward);
-
-					if(angle <= 15f)
+					if(alignment <= approachingAlignment)
 						return;
 				}
 
@@ -569,20 +630,20 @@ static float baseForce = 1000f;
 				Events["Latch"].active = false;
 				Events["Release"].active = true;
 
-				BuildLatchJoint();
-				CalculateLatchJointTarget();
+				BuildJoint();
+				CalculateJointTarget();
 
-				float latchingDuration = Math.Max(
-						(nodeTransform.position - otherPort.nodeTransform.position).magnitude / latchingSpeedTranslation,
-						(Quaternion.Angle(latchJointTargetRotation, Quaternion.identity) / latchingSpeedRotation));
+				ConfigureJointWeak();
 
-				if(float.IsNaN(latchingDuration) || float.IsInfinity(latchingDuration))
-					latchingDuration = 10;
+				jointLastDistance = (otherPort.nodeTransform.position - nodeTransform.position).magnitude;
+				jointLastAlignment = Vector3.Angle(nodeTransform.forward, -otherPort.nodeTransform.forward);
 
-				latchProgress = 1;
-				latchProgressStep = TimeWarp.fixedDeltaTime / latchingDuration;
+			//	float latchingDuration = part.GetComponent<ModuleAnimateGeneric>().GetAnimation().clip.length;
 
-				latchJointInitialPosition = latchJoint.targetPosition;
+				progress = 1;
+			//	progressStep = TimeWarp.fixedDeltaTime / latchingDuration;
+
+				jointInitialPosition = joint.targetPosition;
 
 				part.GetComponent<ModuleAnimateGeneric>().Toggle();
 
@@ -590,30 +651,73 @@ static float baseForce = 1000f;
 			};
 			st_latching.OnFixedUpdate = delegate
 			{
-				if((latchProgress = part.GetComponent<ModuleAnimateGeneric>().Progress) == 1f)
+				if(electricChargeRequiredLatching > 0f)
 				{
-// FEHLER, neu, das hier prüfen...
-					float JointForce = float.IsPositiveInfinity(PhysicsGlobals.JointForce) ? 1000000f : Mathf.Min(1000000f, PhysicsGlobals.JointForce);
+					double amountRequested = electricChargeRequiredLatching * TimeWarp.fixedDeltaTime;
 
-					float force1 = (1f - latchProgress) * JointForce + latchProgress * 100f;
-					float force2 = (1f - latchProgress) * 60000f + latchProgress * 100f;
+					if(part.RequestResource(electricResource.id, amountRequested) < 0.95f * amountRequested)
+					{
+						fsm.RunEvent(on_latchfailed);
+						return;
+					}
+				}
 
-					JointDrive angularDrive = new JointDrive { maximumForce = force1, positionSpring = force2, positionDamper = 0f };
-					latchJoint.angularXDrive = latchJoint.angularYZDrive = latchJoint.slerpDrive = angularDrive;
+				float distance = (otherPort.nodeTransform.position - nodeTransform.position).magnitude;
+				float alignment = Vector3.Angle(nodeTransform.forward, -otherPort.nodeTransform.forward);
+				float angle = CalculateAngle();
 
-					JointDrive linearDrive = new JointDrive { maximumForce = force1, positionSpring = force1, positionDamper = 0f };
-					latchJoint.xDrive = latchJoint.yDrive = latchJoint.zDrive = linearDrive;
+				DockDistance = distance.ToString();
+				DockAlignment = alignment.ToString();
+				DockAngle = angle.ToString();
 
-					latchJoint.targetRotation = latchJointTargetRotation;
-					latchJoint.targetPosition = latchJointTargetPosition;
+				if((jointLastDistance - distance > latchingBreakingDistance)
+				|| (jointLastAlignment - alignment > latchingBreakingAngle))
+				{
+					fsm.RunEvent(on_latchfailed);
+					return;
+				}
 
-					fsm.RunEvent(on_prelatch);
+				if((joint.currentForce.sqrMagnitude > jointBreakForce * jointBreakForce)
+				|| (joint.currentTorque.sqrMagnitude > jointBreakTorque * jointBreakTorque))
+				{
+					fsm.RunEvent(on_latchfailed);
+					return;
+				}
+
+				jointLastDistance = distance;
+				jointLastAlignment = alignment;
+
+				if((distance > captureDistance * 1.04f)
+				|| (angle > captureAlignment * 1.04f)
+				|| (Mathf.Abs(angle) > captureAngle * 1.04f))
+				{
+					fsm.RunEvent(on_latchfailed);
+					return;
+				}
+
+				if((progress = part.GetComponent<ModuleAnimateGeneric>().Progress) > 0f)
+				{
+					float factor = (1f - progress) * latchingBreakingForceFactor + progress * captureBreakingForceFactor;
+
+					jointBreakForce = Mathf.Min(part.breakingForce, otherPort.part.breakingForce) *
+						factor;
+
+					jointBreakTorque = Mathf.Min(part.breakingTorque, otherPort.part.breakingTorque) *
+						factor;
+
+					float force = (1f - progress) * latchingForce + progress * capturingForce;
+
+					JointDrive angularDrive = new JointDrive { maximumForce = force, positionSpring = 60000f, positionDamper = 0f };
+					joint.angularXDrive = joint.angularYZDrive = joint.slerpDrive = angularDrive;
+
+					JointDrive linearDrive = new JointDrive { maximumForce = force, positionSpring = PhysicsGlobals.JointForce, positionDamper = 0f };
+					joint.xDrive = joint.yDrive = joint.zDrive = linearDrive;
+
+					joint.targetRotation = Quaternion.Slerp(jointTargetRotation, Quaternion.identity, progress);
+					joint.targetPosition = Vector3.Lerp(jointTargetPosition, jointInitialPosition, progress);
 				}
 				else
-				{
-					latchJoint.targetRotation = Quaternion.Slerp(latchJointTargetRotation, Quaternion.identity, latchProgress);
-					latchJoint.targetPosition = Vector3.Lerp(latchJointTargetPosition, latchJointInitialPosition, latchProgress);
-				}
+					fsm.RunEvent(on_prelatch);
 			};
 			st_latching.OnLeave = delegate(KFSMState to)
 			{
@@ -627,13 +731,113 @@ static float baseForce = 1000f;
 			{
 				Events["Release"].active = true;
 
-				latchRelaxCounter = 10;
+				jointBreakForce = Mathf.Min(part.breakingForce, otherPort.part.breakingForce) *
+					latchingBreakingForceFactor;
+
+				jointBreakTorque = Mathf.Min(part.breakingTorque, otherPort.part.breakingTorque) *
+						latchingBreakingForceFactor;
+
+				JointDrive angularDrive = new JointDrive { maximumForce = latchingForce, positionSpring = 60000f, positionDamper = 0f };
+				joint.angularXDrive = joint.angularYZDrive = joint.slerpDrive = angularDrive;
+
+				JointDrive linearDrive = new JointDrive { maximumForce = latchingForce, positionSpring = PhysicsGlobals.JointForce, positionDamper = 0f };
+				joint.xDrive = joint.yDrive = joint.zDrive = linearDrive;
+
+				joint.targetRotation = jointTargetRotation;
+				joint.targetPosition = jointTargetPosition;
+
+				waitCounter = 1000;
+				progress = 1;
+				relaxCounter = 10;
 
 				DockStatus = st_prelatched.name;
 			};
 			st_prelatched.OnFixedUpdate = delegate
 			{
-				if(--latchRelaxCounter < 0)
+				if(electricChargeRequiredLatching > 0f)
+				{
+					double amountRequested = electricChargeRequiredLatching * TimeWarp.fixedDeltaTime;
+
+					if(part.RequestResource(electricResource.id, amountRequested) < 0.95f * amountRequested)
+					{
+						fsm.RunEvent(on_latchfailed);
+						return;
+					}
+				}
+
+				float distance = (otherPort.nodeTransform.position - nodeTransform.position).magnitude;
+				float alignment = Vector3.Angle(nodeTransform.forward, -otherPort.nodeTransform.forward);
+				float angle = CalculateAngle();
+
+				DockDistance = distance.ToString();
+				DockAlignment = alignment.ToString();
+				DockAngle = angle.ToString();
+
+				if((jointLastDistance - distance > latchingBreakingDistance)
+				|| (jointLastAlignment - alignment > latchingBreakingAngle))
+				{
+					fsm.RunEvent(on_latchfailed);
+					return;
+				}
+
+				if((joint.currentForce.sqrMagnitude > jointBreakForce * jointBreakForce)
+				|| (joint.currentTorque.sqrMagnitude > jointBreakTorque * jointBreakTorque))
+				{
+					fsm.RunEvent(on_latchfailed);
+					return;
+				}
+
+				jointLastDistance = distance;
+				jointLastAlignment = alignment;
+
+				if(waitCounter > 0)
+				{
+					if((distance < latchingDistance)
+					&& (alignment < latchingAlignment)
+					&& (angle < latchingAngle))
+						waitCounter = 0;
+					else
+					{
+						if(--waitCounter <= 0)
+							fsm.RunEvent(on_latchfailed);
+						return;
+					}
+				}
+
+				if((distance > latchingDistance * 1.04f)
+				|| (angle > latchingAlignment * 1.04f)
+				|| (Mathf.Abs(angle) > latchingAngle * 1.04f))
+				{
+					fsm.RunEvent(on_latchfailed);
+					return;
+				}
+
+				if(progress > 0f)
+				{
+					// factor 0.6f used in this function -> a bit more than half of the force is available before fully latched
+
+					progress = (progress > 0.05f) ? progress - 0.05f : 0f;
+
+					float factor = (1f - progress) * 4f * 0.6f + progress * latchingBreakingForceFactor;
+
+					jointBreakForce = Mathf.Min(part.breakingForce, otherPort.part.breakingForce) *
+						factor;
+
+					jointBreakTorque = Mathf.Min(part.breakingTorque, otherPort.part.breakingTorque) *
+						factor;
+
+					float force = (1f - progress) * PhysicsGlobals.JointForce * 0.6f + progress * latchingForce;
+
+					JointDrive angularDrive = new JointDrive { maximumForce = force, positionSpring = 60000f, positionDamper = 0f };
+					joint.angularXDrive = joint.angularYZDrive = joint.slerpDrive = angularDrive;
+
+					JointDrive linearDrive = new JointDrive { maximumForce = force, positionSpring = PhysicsGlobals.JointForce, positionDamper = 0f };
+					joint.xDrive = joint.yDrive = joint.zDrive = linearDrive;
+
+					return;
+				}
+
+				if(--relaxCounter < 0)
 				{
 					fsm.RunEvent(on_latch);
 					otherPort.fsm.RunEvent(otherPort.on_latch_passive);
@@ -645,7 +849,30 @@ static float baseForce = 1000f;
 					Events["Release"].active = false;
 			};
 			fsm.AddState(st_prelatched);
-		
+
+// FEHLER, wegen der Animation müssen wir das hier anders machen... die muss man zurücksetzen (mindestens) oder sowas... ein "Aufspringen" oder so bauen?? mal sehen halt		
+			st_latchfailed = new KFSMState("Latch Failed");
+			st_latchfailed.OnEnter = delegate(KFSMState from)
+			{
+				if(otherPort != null)
+					otherPort.fsm.RunEvent(otherPort.on_release_passive);
+
+				DestroyJoint();
+
+				waitCounter = 200;
+
+				DockStatus = st_latchfailed.name;
+			};
+			st_latchfailed.OnFixedUpdate = delegate
+			{
+				if(--waitCounter < 0)
+					fsm.RunEvent(on_approach);
+			};
+			st_latchfailed.OnLeave = delegate(KFSMState to)
+			{
+			};
+			fsm.AddState(st_latchfailed);
+
 			st_latched = new KFSMState("Latched");
 			st_latched.OnEnter = delegate(KFSMState from)
 			{
@@ -654,11 +881,16 @@ static float baseForce = 1000f;
 				Events["Dock"].active = true;
 				Events["Undock"].active = false;
 
-				JointDrive angularDrive = new JointDrive { maximumForce = PhysicsGlobals.JointForce, positionSpring = 60000f, positionDamper = 0f };
-				latchJoint.angularXDrive = latchJoint.angularYZDrive = latchJoint.slerpDrive = angularDrive;
+				if(joint == null)
+				{
+					BuildJoint();
+					CalculateJointTarget();
+				}
 
-				JointDrive linearDrive = new JointDrive { maximumForce = PhysicsGlobals.JointForce, positionSpring = PhysicsGlobals.JointForce, positionDamper = 0f };
-				latchJoint.xDrive = latchJoint.yDrive = latchJoint.zDrive = linearDrive;
+				joint.targetRotation = jointTargetRotation;
+				joint.targetPosition = jointTargetPosition;
+
+				ConfigureJointRigid();
 
 				DockStatus = st_latched.name;
 			};
@@ -687,9 +919,10 @@ static float baseForce = 1000f;
 			};
 			st_unlatching.OnFixedUpdate = delegate
 			{
+// FEHLER, den Müll hier nochmal überarbeiten -> unlatching gibt's beim BM nicht, daher muss man das hier neu machen
 				if(part.GetComponent<ModuleAnimateGeneric>().Progress == 1f)
 				{
-					DestroyLatchJoint();
+					DestroyJoint();
 
 					if(otherPort != null)
 						otherPort.fsm.RunEvent(otherPort.on_release_passive);
@@ -708,7 +941,7 @@ static float baseForce = 1000f;
 					maximumForce = PhysicsGlobals.JointForce
 				};
 
-					latchJoint.xDrive = latchJoint.yDrive = latchJoint.zDrive = drive;
+					joint.xDrive = joint.yDrive = joint.zDrive = drive;
 				}
 			};
 			st_unlatching.OnLeave = delegate(KFSMState to)
@@ -752,7 +985,7 @@ static float baseForce = 1000f;
 			st_disabled = new KFSMState("Inactive");
 			st_disabled.OnEnter = delegate(KFSMState from)
 			{
-				Events["TogglePort"].guiName = "Activate End Effector";
+				Events["TogglePort"].guiName = "Activate Payload Lock";
 				Events["TogglePort"].active = true;
 
 				DockStatus = st_disabled.name;
@@ -785,6 +1018,11 @@ static float baseForce = 1000f;
 			on_prelatch.updateMode = KFSMUpdateMode.MANUAL_TRIGGER;
 			on_prelatch.GoToStateOnEvent = st_prelatched;
 			fsm.AddEvent(on_prelatch, st_latching);
+
+			on_latchfailed = new KFSMEvent("Latching Failed");
+			on_latchfailed.updateMode = KFSMUpdateMode.MANUAL_TRIGGER;
+			on_latchfailed.GoToStateOnEvent = st_latchfailed;
+			fsm.AddEvent(on_latchfailed, st_latching, st_prelatched);
 
 			on_latch = new KFSMEvent("Latched");
 			on_latch.updateMode = KFSMUpdateMode.MANUAL_TRIGGER;
@@ -832,13 +1070,84 @@ static float baseForce = 1000f;
 			fsm.AddEvent(on_construction, st_active, st_approaching, st_latching, st_prelatched, st_latched, st_unlatching, st_docked, st_preattached);
 		}
 
+		private float CalculateAngle()
+		{
+			Vector3 tvref = nodeTransform.TransformDirection(dockingOrientation);
+			Vector3 tv = otherPort.nodeTransform.TransformDirection(otherPort.dockingOrientation);
+			float angle = Vector3.SignedAngle(tvref, tv, -nodeTransform.forward);
+
+			angle = 360f + angle - (180f / snapCount);
+			angle %= (360f / snapCount);
+			angle -= (180f / snapCount);
+
+			return angle;
+		}
+
+		private void BuildJoint()
+		{
+			// Joint
+			joint = gameObject.AddComponent<ConfigurableJoint>();
+
+			joint.connectedBody = otherPort.part.Rigidbody;
+
+			DockDistance = "-";
+			DockAlignment = "-";
+			DockAngle = "-";
+		}
+
+		// modifies the joint so that it is moveable
+		private void ConfigureJointWeak()
+		{
+			jointBreakForce = Mathf.Min(part.breakingForce, otherPort.part.breakingForce) *
+				captureBreakingForceFactor;
+
+			jointBreakTorque = Mathf.Min(part.breakingTorque, otherPort.part.breakingTorque) *
+				captureBreakingForceFactor;
+
+			joint.xMotion = joint.yMotion = joint.zMotion = ConfigurableJointMotion.Free;
+			joint.angularXMotion = joint.angularYMotion = joint.angularZMotion = ConfigurableJointMotion.Free;
+
+			SoftJointLimit angularLimit = default(SoftJointLimit);
+			angularLimit.bounciness = 0f;
+
+			SoftJointLimitSpring angularLimitSpring = default(SoftJointLimitSpring);
+			angularLimitSpring.spring = 0f;
+			angularLimitSpring.damper = 0f;
+
+			joint.highAngularXLimit = angularLimit;
+			joint.lowAngularXLimit = angularLimit;
+			joint.angularYLimit = angularLimit;
+			joint.angularZLimit = angularLimit;
+			joint.angularXLimitSpring = angularLimitSpring;
+			joint.angularYZLimitSpring = angularLimitSpring;
+
+			SoftJointLimit linearJointLimit = default(SoftJointLimit);
+			linearJointLimit.limit = 1f;
+			linearJointLimit.bounciness = 0f;
+
+			SoftJointLimitSpring linearJointLimitSpring = default(SoftJointLimitSpring);
+			linearJointLimitSpring.damper = 0f;
+			linearJointLimitSpring.spring = 0f;
+
+			joint.linearLimit = linearJointLimit;
+			joint.linearLimitSpring = linearJointLimitSpring;
+
+			JointDrive angularDrive = new JointDrive { maximumForce = capturingForce, positionSpring = 60000f, positionDamper = 0f };
+			joint.angularXDrive = joint.angularYZDrive = angularDrive; 
+
+			JointDrive linearDrive = new JointDrive { maximumForce = capturingForce, positionSpring = PhysicsGlobals.JointForce, positionDamper = 0f };
+			joint.xDrive = joint.yDrive = joint.zDrive = linearDrive;
+
+			joint.breakForce = float.MaxValue;
+			joint.breakTorque = float.MaxValue;
+		}
+/*
 		private void BuildLatchJoint()
 		{
 			// Joint
 			ConfigurableJoint joint = gameObject.AddComponent<ConfigurableJoint>();
 
 			joint.connectedBody = otherPort.part.Rigidbody;
-joint.enableCollision = true; // FEHLER, hier brauch ich das wohl ... -> klären, wo das noch sein müsste vielleicht??
 
 			joint.breakForce = joint.breakTorque = Mathf.Infinity;
 // FEHLER FEHLER -> breakForce min von beiden und torque auch
@@ -872,36 +1181,87 @@ joint.enableCollision = true; // FEHLER, hier brauch ich das wohl ... -> klären
 			joint.angularXDrive = joint.angularYZDrive = joint.slerpDrive = drive;
 			joint.xDrive = joint.yDrive = joint.zDrive = drive;
 
-			latchJoint = joint;
+			this.joint = joint;
 
 			DockDistance = "-";
 			DockAngle = "-";
 		}
-
-		private void CalculateLatchJointTarget()
+*/
+		// modifies the joint so that it has the same settings like a real docking joint
+		private void ConfigureJointRigid()
 		{
-			Vector3 targetPosition; Quaternion targetRotation;
-			DockingHelper.CalculateDockingPositionAndRotation(this, otherPort, out targetPosition, out targetRotation);
+		//	float stackNodeFactor = 2f;
+		//	float srfNodeFactor = 0.8f;
 
-			// convert values from org-values to real values (for latching we need real values, for docking org-values)
-			targetPosition +=
-				otherPort.GetPart().transform.position
-				- (otherPort.GetPart().vessel.transform.position + otherPort.GetPart().vessel.transform.rotation * otherPort.GetPart().orgPos);
+		//	float breakingForceModifier = 1f;
+		//	float breakingTorqueModifier = 1f;
 
-			targetRotation *=
-				Quaternion.Inverse(otherPort.GetPart().vessel.transform.rotation * otherPort.GetPart().orgRot)
-				* otherPort.GetPart().transform.rotation;
+		//	float attachNodeSize = 1f;
 
-			// invert both values
-			latchJointTargetPosition = -transform.InverseTransformPoint(targetPosition);
-			latchJointTargetRotation = Quaternion.Inverse(Quaternion.Inverse(transform.rotation) * targetRotation);
+			jointBreakForce = Mathf.Min(part.breakingForce, otherPort.part.breakingForce) *
+				4f;
+		//		breakingForceModifier *
+		//		(attachNodeSize + 1f) * (part.attachMode == AttachModes.SRF_ATTACH ? srfNodeFactor : stackNodeFactor);
+
+			jointBreakTorque = Mathf.Min(part.breakingTorque, otherPort.part.breakingTorque) *
+				4f;
+		//		breakingTorqueModifier *
+		//		(attachNodeSize + 1f) * (part.attachMode == AttachModes.SRF_ATTACH ? srfNodeFactor : stackNodeFactor);
+
+			joint.xMotion = joint.yMotion = joint.zMotion = ConfigurableJointMotion.Limited;
+			joint.angularXMotion = joint.angularYMotion = joint.angularZMotion = ConfigurableJointMotion.Limited;
+
+			SoftJointLimit angularLimit = default(SoftJointLimit);
+			angularLimit.bounciness = 0f;
+
+			SoftJointLimitSpring angularLimitSpring = default(SoftJointLimitSpring);
+			angularLimitSpring.spring = 0f;
+			angularLimitSpring.damper = 0f;
+
+			joint.highAngularXLimit = angularLimit;
+			joint.lowAngularXLimit = angularLimit;
+			joint.angularYLimit = angularLimit;
+			joint.angularZLimit = angularLimit;
+			joint.angularXLimitSpring = angularLimitSpring;
+			joint.angularYZLimitSpring = angularLimitSpring;
+
+			SoftJointLimit linearJointLimit = default(SoftJointLimit);
+			linearJointLimit.limit = 1f;
+			linearJointLimit.bounciness = 0f;
+
+			SoftJointLimitSpring linearJointLimitSpring = default(SoftJointLimitSpring);
+			linearJointLimitSpring.damper = 0f;
+			linearJointLimitSpring.spring = 0f;
+
+			joint.linearLimit = linearJointLimit;
+			joint.linearLimitSpring = linearJointLimitSpring;
+
+			JointDrive angularDrive = new JointDrive { maximumForce = PhysicsGlobals.JointForce, positionSpring = 60000f, positionDamper = 0f };
+			joint.angularXDrive = joint.angularYZDrive = angularDrive; 
+
+			JointDrive linearDrive = new JointDrive { maximumForce = PhysicsGlobals.JointForce, positionSpring = PhysicsGlobals.JointForce, positionDamper = 0f };
+			joint.xDrive = joint.yDrive = joint.zDrive = linearDrive;
+
+			joint.breakForce = jointBreakForce;
+			joint.breakTorque = jointBreakTorque;
 		}
 
-		private void DestroyLatchJoint()
+		private void CalculateJointTarget()
+		{
+			Vector3 targetPosition; Quaternion targetRotation;
+			DockingHelper.CalculateLatchingPositionAndRotation(this, otherPort, out targetPosition, out targetRotation);
+
+			// invert both values
+			jointTargetPosition = -transform.InverseTransformPoint(targetPosition);
+			jointTargetRotation = Quaternion.Inverse(Quaternion.Inverse(transform.rotation) * targetRotation);
+		}
+
+		private void DestroyJoint()
 		{
 			// Joint
-			Destroy(latchJoint);
-			latchJoint = null;
+			if(joint)
+				Destroy(joint);
+			joint = null;
 
 			// for some rare cases
 			vessel.ResetRBAnchor();
@@ -959,6 +1319,22 @@ joint.enableCollision = true; // FEHLER, hier brauch ich das wohl ... -> klären
 				{
 					if((fsm != null) && fsm.Started)
 						fsm.UpdateFSM();
+
+					if(FlightGlobals.fetch.VesselTarget == (ITargetable)this)
+					{
+						evtSetAsTarget.active = false;
+						evtUnsetTarget.active = true;
+
+						if(FlightGlobals.ActiveVessel == vessel)
+							FlightGlobals.fetch.SetVesselTarget(null);
+						else if((FlightGlobals.ActiveVessel.transform.position - nodeTransform.position).sqrMagnitude > 40000f)
+							FlightGlobals.fetch.SetVesselTarget(vessel);
+					}
+					else
+					{
+						evtSetAsTarget.active = true;
+						evtUnsetTarget.active = false;
+					}
 				}
 			}
 		}
@@ -1001,13 +1377,16 @@ joint.enableCollision = true; // FEHLER, hier brauch ich das wohl ... -> klären
 		////////////////////////////////////////
 		// Context Menu
 
-		[KSPField(guiName = "Trunnion Port status", isPersistant = false, guiActive = true, guiActiveUnfocused = true, unfocusedRange = 20)]
+		[KSPField(guiName = "Payload Lock status", isPersistant = false, guiActive = true, guiActiveUnfocused = true, unfocusedRange = 20)]
 		public string DockStatus = "Inactive";
 
-		[KSPField(guiName = "Trunnion Port distance", isPersistant = false, guiActive = true)]
+		[KSPField(guiName = "Payload Lock distance", isPersistant = false, guiActive = true)]
 		public string DockDistance;
 
-		[KSPField(guiName = "Trunnion Port angle", isPersistant = false, guiActive = true)]
+		[KSPField(guiName = "Payload Lock alignment", isPersistant = false, guiActive = true)]
+		public string DockAlignment;
+
+		[KSPField(guiName = "Payload Lock angle", isPersistant = false, guiActive = true)]
 		public string DockAngle;
 
 		public void Enable()
@@ -1020,7 +1399,7 @@ joint.enableCollision = true; // FEHLER, hier brauch ich das wohl ... -> klären
 			fsm.RunEvent(on_disable);
 		}
 
-		[KSPEvent(guiActive = true, guiActiveUnfocused = true, guiName = "Deactivate End Effector")]
+		[KSPEvent(guiActive = true, guiActiveUnfocused = true, guiName = "Deactivate Payload Lock")]
 		public void TogglePort()
 		{
 			if(fsm.CurrentState == st_disabled)
@@ -1061,8 +1440,8 @@ joint.enableCollision = true; // FEHLER, hier brauch ich das wohl ... -> klären
 
 			DockingHelper.RestoreCameraPosition(part);
 
-			Destroy(latchJoint);
-			latchJoint = null;
+			Destroy(joint);
+			joint = null;
 
 			fsm.RunEvent(on_dock);
 			otherPort.fsm.RunEvent(otherPort.on_dock_passive);
@@ -1081,8 +1460,13 @@ joint.enableCollision = true; // FEHLER, hier brauch ich das wohl ... -> klären
 
 			DockingHelper.RestoreCameraPosition(part);
 
-			BuildLatchJoint();
-			CalculateLatchJointTarget();
+			BuildJoint();
+			CalculateJointTarget();
+
+			joint.targetRotation = jointTargetRotation;
+			joint.targetPosition = jointTargetPosition;
+
+			ConfigureJointRigid();
 
 			otherPort.fsm.RunEvent(otherPort.on_undock_passive);
 			fsm.RunEvent(on_undock);
@@ -1126,6 +1510,21 @@ joint.enableCollision = true; // FEHLER, hier brauch ich das wohl ... -> klären
 		{ Undock(); }
 
 		////////////////////////////////////////
+		// Reference / Target
+
+		[KSPEvent(guiActive = false, guiActiveUnfocused = true, externalToEVAOnly = false, unfocusedRange = 200f, guiName = "#autoLOC_6001448")]
+		public void SetAsTarget()
+		{
+			FlightGlobals.fetch.SetVesselTarget(this);
+		}
+
+		[KSPEvent(guiActive = false, guiActiveUnfocused = true, externalToEVAOnly = false, unfocusedRange = 200f, guiName = "#autoLOC_6001449")]
+		public void UnsetTarget()
+		{
+			FlightGlobals.fetch.SetVesselTarget(null);
+		}
+
+		////////////////////////////////////////
 		// IDockable
 
 		private DockInfo dockInfo;
@@ -1148,9 +1547,13 @@ joint.enableCollision = true; // FEHLER, hier brauch ich das wohl ... -> klären
 		public void SetDockInfo(DockInfo _dockInfo)
 		{
 			dockInfo = _dockInfo;
-			vesselInfo =
-				(dockInfo == null) ? null :
-				((dockInfo.part == (IDockable)this) ? dockInfo.vesselInfo : dockInfo.targetVesselInfo);
+
+			if(dockInfo == null)
+				vesselInfo = null;
+			else if(dockInfo.part == (IDockable)this)
+				vesselInfo = dockInfo.vesselInfo;
+			else
+				vesselInfo = dockInfo.targetVesselInfo;
 		}
 
 		// returns true, if the port is compatible with the other port
@@ -1208,12 +1611,12 @@ joint.enableCollision = true; // FEHLER, hier brauch ich das wohl ... -> klären
 
 		public Vector3 GetObtVelocity()
 		{
-			return base.vessel.obt_velocity;
+			return vessel.obt_velocity;
 		}
 
 		public Vector3 GetSrfVelocity()
 		{
-			return base.vessel.srf_velocity;
+			return vessel.srf_velocity;
 		}
 
 		public Vector3 GetFwdVector()
@@ -1282,27 +1685,21 @@ joint.enableCollision = true; // FEHLER, hier brauch ich das wohl ... -> klären
 
 		string IModuleInfo.GetModuleTitle()
 		{
-			return "Trunnion Port";
+			return "Payload Lock";
 		}
 
 		string IModuleInfo.GetInfo()
 		{
-/*
-			StringBuilder sb = new StringBuilder();
-			sb.AppendFormat("Attach strength (catched): {0:F0}\n", catchedBreakForce);
-			sb.AppendFormat("Attach strength (latched): {0:F0}\n", latchedBreakForce);
+			string info = "";
 
-			if(electricChargeRequiredLatching != 0f)
-			{
-				sb.Append("\n\n");
-				sb.Append("<b><color=orange>Requires:</color></b>\n");
-				
-				if(electricChargeRequiredLatching != 0f)
-					sb.AppendFormat("- <b>Electric Charge:</b> {0:F0}\n  (for latching)", electricChargeRequiredLatching);
-			}
+			if((electricChargeRequiredLatching > 0f) && (electricChargeRequiredReleasing > 0f))
+				info += "\n<b><color=orange>Requires:</color></b>\n- <b>Electric Charge: </b>for latching and releasing";
+			else if(electricChargeRequiredLatching > 0f) 
+				info += "\n<b><color=orange>Requires:</color></b>\n- <b>Electric Charge: </b>for latching";
+			else if(electricChargeRequiredReleasing > 0f)
+				info += "\n<b><color=orange>Requires:</color></b>\n- <b>Electric Charge: </b>for releasing";
 
-			return sb.ToString();*/
-return ""; // FEHLER, fehlt
+			return info;
 		}
 
 		Callback<Rect> IModuleInfo.GetDrawModulePanelCallback()
@@ -1313,6 +1710,34 @@ return ""; // FEHLER, fehlt
 		string IModuleInfo.GetPrimaryField()
 		{
 			return null;
+		}
+
+		////////////////////////////////////////
+		// IResourceConsumer
+
+		private List<PartResourceDefinition> consumedResources;
+
+		public List<PartResourceDefinition> GetConsumedResources()
+		{
+			return consumedResources;
+		}
+
+		////////////////////////////////////////
+		// IConstruction
+
+		public bool CanBeDetached()
+		{
+			return fsm.CurrentState == st_disabled;
+		}
+
+		public bool CanBeOffset()
+		{
+			return fsm.CurrentState == st_disabled;
+		}
+
+		public bool CanBeRotated()
+		{
+			return fsm.CurrentState == st_disabled;
 		}
 	}
 }

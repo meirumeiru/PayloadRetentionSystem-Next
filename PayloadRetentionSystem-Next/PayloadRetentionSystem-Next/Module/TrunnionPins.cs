@@ -4,9 +4,10 @@ using System.Collections.Generic;
 
 using UnityEngine;
 
-using DockingFunctions;
-
+#if DEBUG
 using PayloadRetentionSystemNext.Utility;
+#endif
+using DockingFunctions;
 
 
 namespace PayloadRetentionSystemNext.Module
@@ -14,6 +15,15 @@ namespace PayloadRetentionSystemNext.Module
 	public class ModuleTrunnionPins : PartModule, IDockable, ITargetable, IModuleInfo
 	{
 		// Settings
+
+		[KSPField(isPersistant = false)]
+		public string nodeType = "TrunnionPin";
+
+		[KSPField(isPersistant = false), SerializeField]
+		private string nodeTypesAccepted = "Trunnion";
+
+		public HashSet<string> nodeTypesAcceptedS = null;
+
 
 		[KSPField(isPersistant = false), SerializeField]
 		public string nodeTransformName = "TrunnionPinsNode";
@@ -23,15 +33,6 @@ namespace PayloadRetentionSystemNext.Module
 
 		[KSPField(isPersistant = false), SerializeField]
 		public int snapCount = 2;
-
-
-		[KSPField(isPersistant = false)]
-		public string nodeType = "TrunnionPin";
-
-		[KSPField(isPersistant = false), SerializeField]
-		private string nodeTypesAccepted = "Trunnion";
-
-		public HashSet<string> nodeTypesAcceptedS = null;
 
 
 		[KSPField(guiFormat = "S", guiActive = true, guiActiveEditor = true, guiName = "Port Name")]
@@ -106,10 +107,10 @@ namespace PayloadRetentionSystemNext.Module
 		{
 			base.OnLoad(node);
 
-			if((part.partInfo != null) && (part.partInfo.partPrefab != null))
-			{
-			}
-			else // I assume, that I'm the prefab then
+			if(node.HasValue("portName"))
+				portName = node.GetValue("portName");
+
+			if((part.partInfo == null) || (part.partInfo.partPrefab == null)) // I assume, that I'm the prefab then
 			{
 				SetVisibility(portMode >= 2);
 
@@ -140,6 +141,8 @@ namespace PayloadRetentionSystemNext.Module
 		public override void OnSave(ConfigNode node)
 		{
 			base.OnSave(node);
+
+			node.AddValue("portName", portName);
 
 			if(companion)
 			{
@@ -179,23 +182,16 @@ namespace PayloadRetentionSystemNext.Module
 			}
 			else
 			{
-				evtSetAsTarget = base.Events["SetAsTarget"];
-				evtUnsetTarget = base.Events["UnsetTarget"];
+				evtSetAsTarget = Events["SetAsTarget"];
+				evtUnsetTarget = Events["UnsetTarget"];
 
-				nodeTransform = base.part.FindModelTransform(nodeTransformName);
+				nodeTransform = part.FindModelTransform(nodeTransformName);
 				if(!nodeTransform)
 				{
-					Debug.LogWarning("[Docking Node Module]: WARNING - No node transform found with name " + nodeTransformName, base.part.gameObject);
+					Logger.Log("No node transform found with name " + nodeTransformName, Logger.Level.Error);
 					return;
 				}
 			}
-
-			SetVisibility(portMode >= 2);
-
-			UpdateDimension();
-			UpdatePosition();
-			UpdateRotation();
-			UpdateNode();
 
 			StartCoroutine(WaitAndInitialize(state));
 
@@ -216,25 +212,27 @@ namespace PayloadRetentionSystemNext.Module
 					yield return null;
 
 				companion = companionPart.GetComponent<ModuleTrunnionPins>();
-
-// FEHELR, oder das hier NUR in dieser Funktion tun?
-				UpdateDimension();
-				UpdatePosition();
-				UpdateRotation();
-				UpdateNode();
 			}
+
+			SetVisibility(portMode >= 2);
+
+			UpdateDimension();
+			UpdatePosition();
+			UpdateRotation();
+			UpdateNode();
 
 			SetupFSM();
 
 			fsm.StartFSM((portMode == 0) ? "Inoperable" : DockStatus);
 
-// FEHLER, ich versuch was -> geht, ist nur fraglich, wieso das nötig ist
-if(st == StartState.Editor)
+			// fix -> the node needs to be re-initialized in the editor after some frames
+			if(st == StartState.Editor)
 			{
-yield return new WaitForFixedUpdate();
-yield return new WaitForFixedUpdate();
-yield return new WaitForFixedUpdate();
-UpdateNode();
+				yield return new WaitForFixedUpdate();
+				yield return new WaitForFixedUpdate();
+				yield return new WaitForFixedUpdate();
+
+				UpdateNode();
 			}
 		}
 	/*
@@ -279,6 +277,7 @@ UpdateNode();
 			st_passive.OnEnter = delegate(KFSMState from)
 			{
 				otherPort = null;
+				dockedPartUId = 0;
 
 				Events["TogglePort"].guiName = "Deactivate Trunnion Pins";
 				Events["TogglePort"].active = true;
@@ -291,9 +290,7 @@ UpdateNode();
 			st_passive.OnLeave = delegate(KFSMState to)
 			{
 				if(to != st_disabled)
-				{
 					Events["TogglePort"].active = false;
-				}
 			};
 			fsm.AddState(st_passive);
 
@@ -320,10 +317,6 @@ UpdateNode();
 			};
 			st_latched_passive.OnLeave = delegate(KFSMState to)
 			{
-				if(to == st_passive)
-				{
-					otherPort = null;
-				}
 			};
 			fsm.AddState(st_latched_passive);
 
@@ -337,10 +330,6 @@ UpdateNode();
 			};
 			st_docked.OnLeave = delegate(KFSMState to)
 			{
-				if(to == st_passive)
-				{
-					otherPort = null;
-				}
 			};
 			fsm.AddState(st_docked);
 
@@ -354,7 +343,6 @@ UpdateNode();
 			};
 			st_preattached.OnLeave = delegate(KFSMState to)
 			{
-				otherPort = null;
 			};
 			fsm.AddState(st_preattached);
 
@@ -569,10 +557,8 @@ UpdateNode();
 			{
 				if(vessel && !vessel.packed)
 				{
-
-				if((fsm != null) && fsm.Started)
-					fsm.FixedUpdateFSM();
-
+					if((fsm != null) && fsm.Started)
+						fsm.FixedUpdateFSM();
 				}
 			}
 		}
@@ -783,9 +769,13 @@ UpdateNode();
 		public void SetDockInfo(DockInfo _dockInfo)
 		{
 			dockInfo = _dockInfo;
-			vesselInfo =
-				(dockInfo == null) ? null :
-				((dockInfo.part == (IDockable)this) ? dockInfo.vesselInfo : dockInfo.targetVesselInfo);
+
+			if(dockInfo == null)
+				vesselInfo = null;
+			else if(dockInfo.part == (IDockable)this)
+				vesselInfo = dockInfo.vesselInfo;
+			else
+				vesselInfo = dockInfo.targetVesselInfo;
 		}
 
 		// returns true, if the port is compatible with the other port
@@ -843,12 +833,12 @@ UpdateNode();
 
 		public Vector3 GetObtVelocity()
 		{
-			return base.vessel.obt_velocity;
+			return vessel.obt_velocity;
 		}
 
 		public Vector3 GetSrfVelocity()
 		{
-			return base.vessel.srf_velocity;
+			return vessel.srf_velocity;
 		}
 
 		public Vector3 GetFwdVector()
