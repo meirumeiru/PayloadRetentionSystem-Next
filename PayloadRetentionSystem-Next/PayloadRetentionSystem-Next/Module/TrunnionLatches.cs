@@ -190,9 +190,6 @@ static float baseForce = 1000f;	// FEHLER, alt, klären wie das neu kommt
 
 		private int followOtherPort = 0;
 
-		private Vector3 otherPortRelativePosition;
-		private Quaternion otherPortRelativeRotation;
-
 		////////////////////////////////////////
 		// Constructor
 
@@ -238,14 +235,6 @@ static float baseForce = 1000f;	// FEHLER, alt, klären wie das neu kommt
 				vesselInfo = new DockedVesselInfo();
 				vesselInfo.Load(node.GetNode("DOCKEDVESSEL"));
 			}
-
-			if(node.HasValue("followOtherPort"))
-			{
-				followOtherPort = int.Parse(node.GetValue("followOtherPort"));
-
-				node.TryGetValue("otherPortRelativePosition", ref otherPortRelativePosition);
-				node.TryGetValue("otherPortRelativeRotation", ref otherPortRelativeRotation);
-			}
 		}
 
 		public override void OnSave(ConfigNode node)
@@ -260,14 +249,6 @@ static float baseForce = 1000f;	// FEHLER, alt, klären wie das neu kommt
 
 			if(vesselInfo != null)
 				vesselInfo.Save(node.AddNode("DOCKEDVESSEL"));
-
-			node.AddValue("followOtherPort", followOtherPort);
-
-			if(followOtherPort != 0)
-			{
-				if(otherPortRelativePosition != null)	node.AddValue("otherPortRelativePosition", otherPortRelativePosition);
-				if(otherPortRelativeRotation != null)	node.AddValue("otherPortRelativeRotation", otherPortRelativeRotation);
-			}
 		}
 
 		public override void OnStart(StartState state)
@@ -378,7 +359,7 @@ static float baseForce = 1000f;	// FEHLER, alt, klären wie das neu kommt
 			if(DockStatus == "Pre Latched")
 				DockStatus = "Latching";
 
-		//	if(DockStatus == "Latched") -> do nothing special
+		//	if(DockStatus == "Latched") {} // -> do nothing special
 
 			if(DockStatus == "Unlatching")
 			{
@@ -399,6 +380,14 @@ static float baseForce = 1000f;	// FEHLER, alt, klären wie das neu kommt
 			}
 
 			fsm.StartFSM(DockStatus);
+
+			if(joint)
+			{
+				if(Vessel.GetDominantVessel(vessel, otherPort.vessel) == otherPort.vessel)
+					followOtherPort = VesselPositionManager.Register(part, otherPort.part);
+				else
+					followOtherPort = VesselPositionManager.Register(otherPort.part, part);
+			}
 		}
 	/*
 		public IEnumerator WaitAndDisableDockingNode()
@@ -429,18 +418,12 @@ static float baseForce = 1000f;	// FEHLER, alt, klären wie das neu kommt
 		{
 			if(vessel == v)
 			{
-				if(DockStatus == "Latched")
+				if(joint)
 				{
 					if(Vessel.GetDominantVessel(vessel, otherPort.vessel) == otherPort.vessel)
-					{
-						followOtherPort = 1;
-						VesselPositionManager.Register(part, otherPort.part, true, out otherPortRelativePosition, out otherPortRelativeRotation);
-					}
+						followOtherPort = VesselPositionManager.Register(part, otherPort.part);
 					else
-					{
-						followOtherPort = 2;
-						VesselPositionManager.Register(otherPort.part, part, true, out otherPortRelativePosition, out otherPortRelativeRotation);
-					}
+						followOtherPort = VesselPositionManager.Register(otherPort.part, part);
 				}
 			}
 		}
@@ -449,9 +432,9 @@ static float baseForce = 1000f;	// FEHLER, alt, klären wie das neu kommt
 		{
 			if(vessel == v)
 			{
-				if(DockStatus == "Latched")
+				if(joint && (followOtherPort != 0))
 				{
-					VesselPositionManager.Unregister((followOtherPort == 1) ? vessel : otherPort.vessel);
+					VesselPositionManager.Unregister(followOtherPort);
 					followOtherPort = 0;
 				}
 			}
