@@ -64,7 +64,6 @@ namespace PayloadRetentionSystemNext.Module
 
 		[KSPField(isPersistant = false), SerializeField]
 		public float latchingForce = 500000f;
-static float baseForce = 1000f;	// FEHLER, alt, klären wie das neu kommt
 
 		[KSPField(isPersistant = false), SerializeField]
 		public float latchingBreakingForceFactor = 0.2f;
@@ -508,6 +507,9 @@ static float baseForce = 1000f;	// FEHLER, alt, klären wie das neu kommt
 						if(_otherPort.fsm.CurrentState != _otherPort.st_passive)
 							continue;
 
+						if(Mathf.Abs(length - otherPort.length) > 0.01) // only allow docking if the length match
+							continue;
+
 						distance = (_otherPort.nodeTransform.position - nodeTransform.position).magnitude;
 
 						if(distance < detectionDistance)
@@ -560,14 +562,6 @@ static float baseForce = 1000f;	// FEHLER, alt, klären wie das neu kommt
 			};
 			st_approaching.OnFixedUpdate = delegate
 			{
-				if(Mathf.Abs(length - otherPort.length) > 0.01)			// FEHLER, hier gar nicht erst einen "Match" zulassen... wozu auch?
-				{
-					DockDistance = "wrong length";
-					DockAngle = "-";
-
-					return;
-				}
-
 				float distance = (otherPort.nodeTransform.position - nodeTransform.position).magnitude;
 				float alignment = Vector3.Angle(nodeTransform.forward, -otherPort.nodeTransform.forward);
 				float angle = CalculateAngle();
@@ -833,13 +827,13 @@ static float baseForce = 1000f;	// FEHLER, alt, klären wie das neu kommt
 			};
 			fsm.AddState(st_prelatched);
 
-// FEHLER, wegen der Animation müssen wir das hier anders machen... die muss man zurücksetzen (mindestens) oder sowas... ein "Aufspringen" oder so bauen?? mal sehen halt		
 			st_latchfailed = new KFSMState("Latch Failed");
 			st_latchfailed.OnEnter = delegate(KFSMState from)
 			{
 				if(otherPort != null)
 					otherPort.fsm.RunEvent(otherPort.on_release_passive);
 
+				part.GetComponent<ModuleAnimateGeneric>().SetScalar(1f);
 				DestroyJoint();
 
 				waitCounter = 200;
@@ -902,8 +896,28 @@ static float baseForce = 1000f;	// FEHLER, alt, klären wie das neu kommt
 			};
 			st_unlatching.OnFixedUpdate = delegate
 			{
-// FEHLER, den Müll hier nochmal überarbeiten -> unlatching gibt's beim BM nicht, daher muss man das hier neu machen
-				if(part.GetComponent<ModuleAnimateGeneric>().Progress == 1f)
+				if((progress = part.GetComponent<ModuleAnimateGeneric>().Progress) < 1f)
+				{
+					float factor = (1f - progress) * latchingBreakingForceFactor + progress * captureBreakingForceFactor;
+
+					jointBreakForce = Mathf.Min(part.breakingForce, otherPort.part.breakingForce) *
+						factor;
+
+					jointBreakTorque = Mathf.Min(part.breakingTorque, otherPort.part.breakingTorque) *
+						factor;
+
+					float force = (1f - progress) * latchingForce + progress * capturingForce;
+
+					JointDrive angularDrive = new JointDrive { maximumForce = force, positionSpring = 60000f, positionDamper = 0f };
+					joint.angularXDrive = joint.angularYZDrive = joint.slerpDrive = angularDrive;
+
+					JointDrive linearDrive = new JointDrive { maximumForce = force, positionSpring = PhysicsGlobals.JointForce, positionDamper = 0f };
+					joint.xDrive = joint.yDrive = joint.zDrive = linearDrive;
+
+					joint.targetRotation = Quaternion.Slerp(jointTargetRotation, Quaternion.identity, progress);
+					joint.targetPosition = Vector3.Lerp(jointTargetPosition, jointInitialPosition, progress);
+				}
+				else
 				{
 					DestroyJoint();
 
@@ -911,20 +925,6 @@ static float baseForce = 1000f;	// FEHLER, alt, klären wie das neu kommt
 						otherPort.fsm.RunEvent(otherPort.on_release_passive);
 
 					fsm.RunEvent(on_release);
-				}
-				else
-				{
-// FEHLER, ich probier mal was...
-
-			JointDrive drive =
-				new JointDrive
-				{
-					positionSpring = (1f - part.GetComponent<ModuleAnimateGeneric>().Progress) * baseForce,
-					positionDamper = 0f,
-					maximumForce = PhysicsGlobals.JointForce
-				};
-
-					joint.xDrive = joint.yDrive = joint.zDrive = drive;
 				}
 			};
 			st_unlatching.OnLeave = delegate(KFSMState to)
@@ -1124,52 +1124,7 @@ static float baseForce = 1000f;	// FEHLER, alt, klären wie das neu kommt
 			joint.breakForce = float.MaxValue;
 			joint.breakTorque = float.MaxValue;
 		}
-/*
-		private void BuildLatchJoint()
-		{
-			// Joint
-			ConfigurableJoint joint = gameObject.AddComponent<ConfigurableJoint>();
 
-			joint.connectedBody = otherPort.part.Rigidbody;
-
-			joint.breakForce = joint.breakTorque = Mathf.Infinity;
-// FEHLER FEHLER -> breakForce min von beiden und torque auch
-
-			// we calculate with the "stack" force -> thus * 4f and not * 1.6f
-
-			float breakingForceModifier = 1f;
-			float breakingTorqueModifier = 1f;
-
-			latchJointBreakForce = Mathf.Min(part.breakingForce, otherPort.part.breakingForce) *
-				breakingForceModifier * 4f;
-
-			latchJointBreakTorque = Mathf.Min(part.breakingTorque, otherPort.part.breakingTorque) *
-				breakingTorqueModifier * 4f;
-
-			joint.breakForce = latchJointBreakForce;
-			joint.breakTorque = latchJointBreakTorque;
-
-
-			joint.xMotion = joint.yMotion = joint.zMotion = ConfigurableJointMotion.Free;
-			joint.angularXMotion = joint.angularYMotion = joint.angularZMotion = ConfigurableJointMotion.Free;
-
-			JointDrive drive =
-				new JointDrive
-				{
-					positionSpring = 100f,
-					positionDamper = 0f,
-					maximumForce = 100f
-				};
-
-			joint.angularXDrive = joint.angularYZDrive = joint.slerpDrive = drive;
-			joint.xDrive = joint.yDrive = joint.zDrive = drive;
-
-			this.joint = joint;
-
-			DockDistance = "-";
-			DockAngle = "-";
-		}
-*/
 		// modifies the joint so that it has the same settings like a real docking joint
 		private void ConfigureJointRigid()
 		{
@@ -1413,15 +1368,12 @@ static float baseForce = 1000f;	// FEHLER, alt, klären wie das neu kommt
 			otherPort.otherPort = this;
 			otherPort.dockedPartUId = part.flightID;
 
-			DockingHelper.SaveCameraPosition(part);
 			DockingHelper.SuspendCameraSwitch(10);
 
 			if(otherPort.vessel == Vessel.GetDominantVessel(vessel, otherPort.vessel))
 				DockingHelper.DockVessels(this, otherPort);
 			else
 				DockingHelper.DockVessels(otherPort, this);
-
-			DockingHelper.RestoreCameraPosition(part);
 
 			Destroy(joint);
 			joint = null;
@@ -1436,12 +1388,9 @@ static float baseForce = 1000f;	// FEHLER, alt, klären wie das neu kommt
 			Vessel oldvessel = vessel;
 			uint referenceTransformId = vessel.referenceTransformId;
 
-			DockingHelper.SaveCameraPosition(part);
 			DockingHelper.SuspendCameraSwitch(10);
 
 			DockingHelper.UndockVessels(this, otherPort);
-
-			DockingHelper.RestoreCameraPosition(part);
 
 			BuildJoint();
 			CalculateJointTarget();
@@ -1465,12 +1414,8 @@ static float baseForce = 1000f;	// FEHLER, alt, klären wie das neu kommt
 		{
 			yield return null;
 
-			DockingHelper.SaveCameraPosition(part);
-
 			FlightGlobals.ForceSetActiveVessel(vessel);
 			FlightInputHandler.SetNeutralControls();
-
-			DockingHelper.RestoreCameraPosition(part);
 		}
 
 		////////////////////////////////////////

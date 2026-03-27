@@ -426,8 +426,6 @@ namespace PayloadRetentionSystemNext.Module
 			foreach(Collider c in Plate003.GetComponentsInChildren<Collider>())
 				c.enabled = visible;
 
-			// attach-Node entfernen - FEHLER, fehlt?
-
 			AttachNode n = part.FindAttachNode("TrunnionPinsNode");
 
 			if(n != null)
@@ -543,7 +541,7 @@ namespace PayloadRetentionSystemNext.Module
 			if(_c)
 				_c.ClearCompanion();
 
-			length = 0; // FEHLER, klären, ob das immer 0 sein soll, wenn wir mode 0 oder 1 haben
+			length = 2f;
 
 			UpdatePosition();
 		}
