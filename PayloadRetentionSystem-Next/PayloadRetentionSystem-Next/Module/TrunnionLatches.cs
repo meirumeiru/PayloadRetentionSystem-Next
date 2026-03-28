@@ -305,6 +305,8 @@ namespace PayloadRetentionSystemNext.Module
 			Events["Dock"].active = false;
 			Events["Undock"].active = false;
 
+			ResetDockInfo();
+
 			if(dockedPartUId != 0)
 			{
 				Part otherPart;
@@ -537,20 +539,21 @@ namespace PayloadRetentionSystemNext.Module
 					}
 				}
 
-				DockDistance = "-";
-				DockAlignment = "-";
-				DockAngle = "-";
+				ResetDockInfo();
 			};
 			st_active.OnLeave = delegate(KFSMState to)
 			{
+				if(to != st_disabled)
+					Events["TogglePort"].active = false;
+
+				if(to != st_approaching)
+					ResetDockInfo();
 			};
 			fsm.AddState(st_active);
 
 			st_approaching = new KFSMState("Approaching");
 			st_approaching.OnEnter = delegate(KFSMState from)
 			{
-				Events["TogglePort"].active = false;
-
 				inCaptureDistance = false;
 
 				otherPort.otherPort = this;
@@ -598,6 +601,7 @@ namespace PayloadRetentionSystemNext.Module
 			};
 			st_approaching.OnLeave = delegate(KFSMState to)
 			{
+				ResetDockInfo();
 			};
 			fsm.AddState(st_approaching);
 
@@ -700,6 +704,9 @@ namespace PayloadRetentionSystemNext.Module
 			{
 				if(to != st_prelatched)
 					Events["Release"].active = false;
+
+				if(to != st_prelatched)
+					ResetDockInfo();
 			};
 			fsm.AddState(st_latching);
 
@@ -824,6 +831,8 @@ namespace PayloadRetentionSystemNext.Module
 			{
 				if(to != st_latched)
 					Events["Release"].active = false;
+
+				ResetDockInfo();
 			};
 			fsm.AddState(st_prelatched);
 
@@ -856,7 +865,6 @@ namespace PayloadRetentionSystemNext.Module
 				Events["Release"].active = true;
 
 				Events["Dock"].active = true;
-				Events["Undock"].active = false;
 
 				if(joint == null)
 				{
@@ -886,10 +894,6 @@ namespace PayloadRetentionSystemNext.Module
 			st_unlatching = new KFSMState("Unlatching");
 			st_unlatching.OnEnter = delegate(KFSMState from)
 			{
-				Events["Release"].active = false;
-				Events["Latch"].active = false;
-				Events["Dock"].active = false;
-
 				part.GetComponent<ModuleAnimateGeneric>().Toggle();
 
 				DockStatus = st_unlatching.name;
@@ -970,6 +974,8 @@ namespace PayloadRetentionSystemNext.Module
 			{
 				Events["TogglePort"].guiName = "Activate Payload Lock";
 				Events["TogglePort"].active = true;
+
+				ResetDockInfo();
 
 				DockStatus = st_disabled.name;
 			};
@@ -1066,16 +1072,19 @@ namespace PayloadRetentionSystemNext.Module
 			return angle;
 		}
 
+		private void ResetDockInfo()
+		{
+			DockDistance = "-";
+			DockAlignment = "-";
+			DockAngle = "-";
+		}
+
 		private void BuildJoint()
 		{
 			// Joint
 			joint = gameObject.AddComponent<ConfigurableJoint>();
 
 			joint.connectedBody = otherPort.part.Rigidbody;
-
-			DockDistance = "-";
-			DockAlignment = "-";
-			DockAngle = "-";
 		}
 
 		// modifies the joint so that it is moveable
