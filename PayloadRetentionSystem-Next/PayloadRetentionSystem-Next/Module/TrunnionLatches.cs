@@ -509,7 +509,7 @@ namespace PayloadRetentionSystemNext.Module
 						if(_otherPort.fsm.CurrentState != _otherPort.st_passive)
 							continue;
 
-						if(Mathf.Abs(length - otherPort.length) > 0.01) // only allow docking if the length match
+						if(Mathf.Abs(length - _otherPort.length) > 0.01) // only allow docking if the length match
 							continue;
 
 						distance = (_otherPort.nodeTransform.position - nodeTransform.position).magnitude;
