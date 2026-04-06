@@ -1394,9 +1394,6 @@ namespace PayloadRetentionSystemNext.Module
 		[KSPEvent(guiActive = true, guiActiveUnfocused = true, externalToEVAOnly = true, unfocusedRange = 2f, guiName = "#autoLOC_6001445")]
 		public void Undock()
 		{
-			Vessel oldvessel = vessel;
-			uint referenceTransformId = vessel.referenceTransformId;
-
 			DockingHelper.SuspendCameraSwitch(10);
 
 			DockingHelper.UndockVessels(this, otherPort);
@@ -1411,20 +1408,6 @@ namespace PayloadRetentionSystemNext.Module
 
 			otherPort.fsm.RunEvent(otherPort.on_undock_passive);
 			fsm.RunEvent(on_undock);
-
-			if(oldvessel == FlightGlobals.ActiveVessel)
-			{
-				if(vessel[referenceTransformId] == null)
-					StartCoroutine(WaitAndSwitchFocus());
-			}
-		}
-
-		public IEnumerator WaitAndSwitchFocus()
-		{
-			yield return null;
-
-			FlightGlobals.ForceSetActiveVessel(vessel);
-			FlightInputHandler.SetNeutralControls();
 		}
 
 		////////////////////////////////////////
