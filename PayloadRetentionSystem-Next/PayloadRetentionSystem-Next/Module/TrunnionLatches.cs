@@ -75,20 +75,20 @@ namespace PayloadRetentionSystemNext.Module
 		public float latchingBreakingAngle = 1.0f;
 
 		[KSPField(isPersistant = false), SerializeField]
-		public float latchingSpeedRotation = 0.1f; // degrees per second
+		public float latchingSpeedRotation = 0.5f; // degrees per second
 
 		[KSPField(isPersistant = false), SerializeField]
-		public float latchingSpeedTranslation = 0.025f; // distance per second
+		public float latchingSpeedTranslation = 0.125f; // distance per second
 
 
 		[KSPField(isPersistant = false), SerializeField]
-		public float latchingDistance = 0.002f;
+		public float latchingDistance = 0.02f;
 
 		[KSPField(isPersistant = false), SerializeField]
-		public float latchingAlignment = 0.04f;
+		public float latchingAlignment = 0.25f;
 
 		[KSPField(isPersistant = false), SerializeField]
-		public float latchingAngle = 0.04f;
+		public float latchingAngle = 0.25f;
 
 
 		[KSPField(isPersistant = false), SerializeField]
@@ -516,13 +516,13 @@ namespace PayloadRetentionSystemNext.Module
 
 						if(distance < detectionDistance)
 						{
-							DockDistance = distance.ToString();
+							DockDistance = distance.ToString("F4");
 
 							alignment = Vector3.Angle(nodeTransform.forward, -_otherPort.nodeTransform.forward);
 
 							if((alignment <= approachingAlignment) && (distance <= approachingDistance))
 							{
-								DockAlignment = alignment.ToString();
+								DockAlignment = alignment.ToString("F3") + "°";
 								DockAngle = "-";
 
 								// we don't expect to see multiple matching ports in the same area
@@ -569,9 +569,9 @@ namespace PayloadRetentionSystemNext.Module
 				float alignment = Vector3.Angle(nodeTransform.forward, -otherPort.nodeTransform.forward);
 				float angle = CalculateAngle();
 
-				DockDistance = distance.ToString();
-				DockAlignment = alignment.ToString();
-				DockAngle = angle.ToString();
+				DockDistance = distance.ToString("F4");
+				DockAlignment = alignment.ToString("F3") + "°";
+				DockAngle = angle.ToString("F3") + "°";
 
 				if((distance < captureDistance)
 				&& (alignment < captureAlignment)
@@ -647,9 +647,9 @@ namespace PayloadRetentionSystemNext.Module
 				float alignment = Vector3.Angle(nodeTransform.forward, -otherPort.nodeTransform.forward);
 				float angle = CalculateAngle();
 
-				DockDistance = distance.ToString();
-				DockAlignment = alignment.ToString();
-				DockAngle = angle.ToString();
+				DockDistance = distance.ToString("F4");
+				DockAlignment = alignment.ToString("F3") + "°";
+				DockAngle = angle.ToString("F3") + "°";
 
 				if((jointLastDistance - distance > latchingBreakingDistance)
 				|| (jointLastAlignment - alignment > latchingBreakingAngle))
@@ -669,7 +669,7 @@ namespace PayloadRetentionSystemNext.Module
 				jointLastAlignment = alignment;
 
 				if((distance > captureDistance * 1.04f)
-				|| (angle > captureAlignment * 1.04f)
+				|| (alignment > captureAlignment * 1.04f)
 				|| (Mathf.Abs(angle) > captureAngle * 1.04f))
 				{
 					fsm.RunEvent(on_latchfailed);
@@ -689,7 +689,7 @@ namespace PayloadRetentionSystemNext.Module
 					float force = (1f - progress) * latchingForce + progress * capturingForce;
 
 					JointDrive angularDrive = new JointDrive { maximumForce = force, positionSpring = 60000f, positionDamper = 0f };
-					joint.angularXDrive = joint.angularYZDrive = joint.slerpDrive = angularDrive;
+					joint.angularXDrive = joint.angularYZDrive = angularDrive;
 
 					JointDrive linearDrive = new JointDrive { maximumForce = force, positionSpring = PhysicsGlobals.JointForce, positionDamper = 0f };
 					joint.xDrive = joint.yDrive = joint.zDrive = linearDrive;
@@ -722,7 +722,7 @@ namespace PayloadRetentionSystemNext.Module
 						latchingBreakingForceFactor;
 
 				JointDrive angularDrive = new JointDrive { maximumForce = latchingForce, positionSpring = 60000f, positionDamper = 0f };
-				joint.angularXDrive = joint.angularYZDrive = joint.slerpDrive = angularDrive;
+				joint.angularXDrive = joint.angularYZDrive = angularDrive;
 
 				JointDrive linearDrive = new JointDrive { maximumForce = latchingForce, positionSpring = PhysicsGlobals.JointForce, positionDamper = 0f };
 				joint.xDrive = joint.yDrive = joint.zDrive = linearDrive;
@@ -753,9 +753,9 @@ namespace PayloadRetentionSystemNext.Module
 				float alignment = Vector3.Angle(nodeTransform.forward, -otherPort.nodeTransform.forward);
 				float angle = CalculateAngle();
 
-				DockDistance = distance.ToString();
-				DockAlignment = alignment.ToString();
-				DockAngle = angle.ToString();
+				DockDistance = distance.ToString("F4");
+				DockAlignment = alignment.ToString("F3") + "°";
+				DockAngle = angle.ToString("F3") + "°";
 
 				if((jointLastDistance - distance > latchingBreakingDistance)
 				|| (jointLastAlignment - alignment > latchingBreakingAngle))
@@ -778,7 +778,7 @@ namespace PayloadRetentionSystemNext.Module
 				{
 					if((distance < latchingDistance)
 					&& (alignment < latchingAlignment)
-					&& (angle < latchingAngle))
+					&& (Mathf.Abs(angle) < latchingAngle))
 						waitCounter = 0;
 					else
 					{
@@ -789,7 +789,7 @@ namespace PayloadRetentionSystemNext.Module
 				}
 
 				if((distance > latchingDistance * 1.04f)
-				|| (angle > latchingAlignment * 1.04f)
+				|| (alignment > latchingAlignment * 1.04f)
 				|| (Mathf.Abs(angle) > latchingAngle * 1.04f))
 				{
 					fsm.RunEvent(on_latchfailed);
@@ -813,7 +813,7 @@ namespace PayloadRetentionSystemNext.Module
 					float force = (1f - progress) * PhysicsGlobals.JointForce * 0.6f + progress * latchingForce;
 
 					JointDrive angularDrive = new JointDrive { maximumForce = force, positionSpring = 60000f, positionDamper = 0f };
-					joint.angularXDrive = joint.angularYZDrive = joint.slerpDrive = angularDrive;
+					joint.angularXDrive = joint.angularYZDrive = angularDrive;
 
 					JointDrive linearDrive = new JointDrive { maximumForce = force, positionSpring = PhysicsGlobals.JointForce, positionDamper = 0f };
 					joint.xDrive = joint.yDrive = joint.zDrive = linearDrive;
@@ -913,7 +913,7 @@ namespace PayloadRetentionSystemNext.Module
 					float force = (1f - progress) * latchingForce + progress * capturingForce;
 
 					JointDrive angularDrive = new JointDrive { maximumForce = force, positionSpring = 60000f, positionDamper = 0f };
-					joint.angularXDrive = joint.angularYZDrive = joint.slerpDrive = angularDrive;
+					joint.angularXDrive = joint.angularYZDrive = angularDrive;
 
 					JointDrive linearDrive = new JointDrive { maximumForce = force, positionSpring = PhysicsGlobals.JointForce, positionDamper = 0f };
 					joint.xDrive = joint.yDrive = joint.zDrive = linearDrive;
