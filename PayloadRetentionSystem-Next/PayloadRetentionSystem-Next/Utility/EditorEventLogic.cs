@@ -26,6 +26,23 @@ namespace PayloadRetentionSystemNext.Utility
 		}
 
 		////////////////////
+		// Helper Functions
+
+		private bool Find(Part part, Part searched)
+		{
+			if(part == searched)
+				return true;
+
+			foreach(Part c in part.children)
+			{
+				if(Find(c, searched))
+					return true;
+			}
+
+			return false;
+		}
+
+		////////////////////
 		// Callback Functions
 		
 		public void OnEditorPartEvent(ConstructionEventType evt, Part part)
@@ -44,7 +61,7 @@ namespace PayloadRetentionSystemNext.Utility
 
 						l.UpdateDimension();
 					}
-					else if(p)
+/*					else if(p)
 					{
 						ModuleTrunnionPins pp = part.parent.GetComponent<ModuleTrunnionPins>();
 
@@ -53,16 +70,21 @@ namespace PayloadRetentionSystemNext.Utility
 							if((p.portMode < 2) && (pp.portMode < 2))
 								pp.SetCompanion(p);
 						}
-					}
+					}*/
 				}
 				break;
 
 			case ConstructionEventType.PartDetached:
 				{
-					ModuleTrunnionPins pp = part.GetComponent<ModuleTrunnionPins>();
+					ModuleTrunnionPins p = part.GetComponent<ModuleTrunnionPins>();
+					if(p && p.companion)
+					{
+						Part r = part;
+						while(r.parent) r = r.parent;
 
-					if(pp)
-						pp.ClearCompanion();
+						if(!Find(r, p.companion.part))
+							p.ClearCompanion();
+					}
 				}
 				break;
 			}

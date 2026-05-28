@@ -88,6 +88,8 @@
     <Compile Include="Utility\EditorEventLogic.cs" />
     <Compile Include="Utility\LineDrawer.cs" />
     <Compile Include="Utility\Logger.cs" />
+    <Compile Include="Utility\ObjectLinkHelper.cs" />
+    <Compile Include="Utility\PartSelector.cs" />
   </ItemGroup>
   <ItemGroup />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

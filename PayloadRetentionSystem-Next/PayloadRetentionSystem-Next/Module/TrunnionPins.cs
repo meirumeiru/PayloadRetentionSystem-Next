@@ -14,6 +14,9 @@ namespace PayloadRetentionSystemNext.Module
 {
 	public class ModuleTrunnionPins : PartModule, IDockable, ITargetable, IModuleInfo
 	{
+		private const string INVALID_ANGLE_TEXT = "Invalid angle!";
+		private const string INVALID_ALIGNMENT_TEXT = "Invalid alignment!";
+
 		// Settings
 
 		[KSPField(isPersistant = false)]
@@ -40,8 +43,11 @@ namespace PayloadRetentionSystemNext.Module
 
 		// Construction
 
+		public uint partId = 0;
+		public uint companionPartId = 0;
+		public uint companionPartFlightId = 0;
+
 		public ModuleTrunnionPins companion = null;
-		public uint companionPartUId;
 
 		public Vector3 companionOffset = Vector3.zero;
 
@@ -107,21 +113,11 @@ namespace PayloadRetentionSystemNext.Module
 		{
 			base.OnLoad(node);
 
-			if(node.HasValue("portName"))
-				portName = node.GetValue("portName");
+			node.TryGetValue("portName", ref portName);
 
-			if((part.partInfo == null) || (part.partInfo.partPrefab == null)) // I assume, that I'm the prefab then
-			{
-				SetVisibility(portMode >= 2);
-
-				UpdateDimension();
-				UpdatePosition();
-				UpdateRotation();
-				UpdateNode();
-			}
-
-			if(node.HasValue("companionUId"))
-				companionPartUId = uint.Parse(node.GetValue("companionUId"));
+			node.TryGetValue("partId", ref partId);
+			node.TryGetValue("companionPartId", ref companionPartId);
+			node.TryGetValue("companionPartFlightId", ref companionPartFlightId);
 
 			if(node.HasValue("companionOffset"))
 				companionOffset = ConfigNode.ParseVector3(node.GetValue("companionOffset"));
@@ -136,6 +132,18 @@ namespace PayloadRetentionSystemNext.Module
 				vesselInfo = new DockedVesselInfo();
 				vesselInfo.Load(node.GetNode("DOCKEDVESSEL"));
 			}
+
+			if((part.partInfo == null) || (part.partInfo.partPrefab == null)) // I assume, that I'm the prefab then
+			{
+				nodeTransform = part.FindModelTransform(nodeTransformName);
+
+				SetVisibility();
+
+				UpdateDimension();
+				UpdatePosition();
+				UpdateRotation();
+				UpdateNode();
+			}
 		}
 
 		public override void OnSave(ConfigNode node)
@@ -146,7 +154,10 @@ namespace PayloadRetentionSystemNext.Module
 
 			if(companion)
 			{
-				node.AddValue("companionUId", companionPartUId);
+				node.AddValue("partId", partId);
+				node.AddValue("companionPartId", companionPartId);
+				node.AddValue("companionPartFlightId", companionPartFlightId);
+
 				node.AddValue("companionOffset", companionOffset);
 			}
 
@@ -160,6 +171,13 @@ namespace PayloadRetentionSystemNext.Module
 		{
 			base.OnStart(state);
 
+			nodeTransform = part.FindModelTransform(nodeTransformName);
+			if(!nodeTransform)
+			{
+				Logger.Log("No node transform found with name " + nodeTransformName, Logger.Level.Error);
+				return;
+			}
+
 			nodeTypesAcceptedS = new HashSet<string>();
 
 			string[] values = nodeTypesAccepted.Split(new char[2] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries);
@@ -171,6 +189,7 @@ namespace PayloadRetentionSystemNext.Module
 
 			if(state == StartState.Editor)
 			{
+				Fields["removed"].OnValueModified += onChanged_removed;
 				Fields["length"].OnValueModified += onChanged_length;
 				Fields["width"].OnValueModified += onChanged_width;
 				Fields["offsetY"].OnValueModified += onChanged_offset;
@@ -179,18 +198,13 @@ namespace PayloadRetentionSystemNext.Module
 				Fields["rotationX"].OnValueModified += onChanged_rotation;
 				Fields["rotationY"].OnValueModified += onChanged_rotation;
 				Fields["rotationZ"].OnValueModified += onChanged_rotation;
+
+				onChanged_removed(null);
 			}
 			else
 			{
 				evtSetAsTarget = Events["SetAsTarget"];
 				evtUnsetTarget = Events["UnsetTarget"];
-
-				nodeTransform = part.FindModelTransform(nodeTransformName);
-				if(!nodeTransform)
-				{
-					Logger.Log("No node transform found with name " + nodeTransformName, Logger.Level.Error);
-					return;
-				}
 			}
 
 			StartCoroutine(WaitAndInitialize(state));
@@ -198,23 +212,43 @@ namespace PayloadRetentionSystemNext.Module
 	//		StartCoroutine(WaitAndDisableDockingNode());
 		}
 
-		public IEnumerator WaitAndInitialize(StartState st)
+		public IEnumerator WaitAndInitialize(StartState state)
 		{
 			yield return null;
 
 			Events["TogglePort"].active = false;
 
-			if(companionPartUId != 0)
+			if(state == StartState.Editor)
 			{
-				Part companionPart;
+				if(companionPartId != 0)
+				{
+					companion = Utility.ObjectLinkHelper.FindLinked(this);
 
-				while(!(companionPart = FlightGlobals.FindPartByID(companionPartUId)))
-					yield return null;
+					if(companion)
+					{
+						Utility.ObjectLinkHelper.Link(this, companion); // neue Werte setzen -> z.B. weil wir kopiert wurden oder so -> dann würde das kollidieren
 
-				companion = companionPart.GetComponent<ModuleTrunnionPins>();
+						if(part.mass >= companion.part.mass)
+							companion.ShowContextMenu(false);
+						else
+							ShowContextMenu(false);
+					}
+				}
+			}
+			else
+			{
+				if(companionPartFlightId != 0)
+				{
+					Part companionPart;
+
+					while(!(companionPart = FlightGlobals.FindPartByID(companionPartFlightId)))
+						yield return null;
+
+					companion = companionPart.GetComponent<ModuleTrunnionPins>();
+				}
 			}
 
-			SetVisibility(portMode >= 2);
+			onChanged_portMode(null);
 
 			UpdateDimension();
 			UpdatePosition();
@@ -226,7 +260,7 @@ namespace PayloadRetentionSystemNext.Module
 			fsm.StartFSM((portMode == 0) ? "Inoperable" : DockStatus);
 
 			// fix -> the node needs to be re-initialized in the editor after some frames
-			if(st == StartState.Editor)
+			if(state == StartState.Editor)
 			{
 				yield return new WaitForFixedUpdate();
 				yield return new WaitForFixedUpdate();
@@ -251,6 +285,7 @@ namespace PayloadRetentionSystemNext.Module
 	*/
 		public void OnDestroy()
 		{
+			Fields["removed"].OnValueModified -= onChanged_removed;
 			Fields["length"].OnValueModified -= onChanged_length;
 			Fields["width"].OnValueModified -= onChanged_width;
 			Fields["offsetY"].OnValueModified -= onChanged_offset;
@@ -270,7 +305,12 @@ namespace PayloadRetentionSystemNext.Module
 
 			st_inoperable = new KFSMState("Inoperable");
 			st_inoperable.OnEnter = delegate(KFSMState from)
-			{ SetVisibility(false); };
+			{
+				SetVisibility();
+
+				Fields["DockStatus"].guiActive = false;
+				Events["TogglePort"].guiActive = false;
+			};
 			fsm.AddState(st_inoperable);
 
 			st_passive = new KFSMState("Ready");
@@ -407,30 +447,51 @@ namespace PayloadRetentionSystemNext.Module
 			fsm.AddEvent(on_disable, st_passive);
 		}
 
-		internal void SetVisibility(bool visible)
+		private void SetPlateVisibility(Transform Plate, bool visible)
 		{
+			foreach(MeshRenderer r in Plate.GetComponentsInChildren<MeshRenderer>())
+				r.enabled = visible;
+
+			foreach(Collider c in Plate.GetComponentsInChildren<Collider>())
+				c.enabled = visible;
+		}
+
+		internal void SetVisibility()
+		{
+			int mode = 0;
+
+			if(!removed)
+			{
+				if(portMode == 1)
+				{
+					if(!companionOffset.IsZero())
+						mode = 2;
+					else if(companion != null)
+						mode = 0;
+					else
+						mode = 1;
+				}
+				else
+					mode = 2;
+			}
+
 			UpdateDimension();
 
-			Transform Plate001 = KSPUtil.FindInPartModel(transform, "Plate.001");
-			Transform Plate003 = KSPUtil.FindInPartModel(transform, "Plate.003");
+			Transform Plate000 = part.FindModelTransform("Plate.000");
+			Transform Plate001 = part.FindModelTransform("Plate.001");
+			Transform Plate002 = part.FindModelTransform("Plate.002");
+			Transform Plate003 = part.FindModelTransform("Plate.003");
 
-			foreach(MeshRenderer r in Plate001.GetComponentsInChildren<MeshRenderer>())
-				r.enabled = visible;
-
-			foreach(Collider c in Plate001.GetComponentsInChildren<Collider>())
-				c.enabled = visible;
-
-			foreach(MeshRenderer r in Plate003.GetComponentsInChildren<MeshRenderer>())
-				r.enabled = visible;
-			
-			foreach(Collider c in Plate003.GetComponentsInChildren<Collider>())
-				c.enabled = visible;
+			if(Plate000) SetPlateVisibility(Plate000, mode > 0);
+			if(Plate001) SetPlateVisibility(Plate001, mode > 1);
+			if(Plate002) SetPlateVisibility(Plate002, mode > 0);
+			if(Plate003) SetPlateVisibility(Plate003, mode > 1);
 
 			AttachNode n = part.FindAttachNode("TrunnionPinsNode");
 
 			if(n != null)
 			{
-				if(visible)
+				if(mode == 2)
 				{
 					n.nodeType = AttachNode.NodeType.Stack;
 					n.radius = 0.4f;
@@ -445,15 +506,17 @@ namespace PayloadRetentionSystemNext.Module
 
 		internal void UpdateDimension()
 		{
-			Transform Plate000 = KSPUtil.FindInPartModel(transform, "Plate.000");
-			Transform Plate001 = KSPUtil.FindInPartModel(transform, "Plate.001");
-			Transform Plate002 = KSPUtil.FindInPartModel(transform, "Plate.002");
-			Transform Plate003 = KSPUtil.FindInPartModel(transform, "Plate.003");
+			Transform Plate000 = part.FindModelTransform("Plate.000");
+			Transform Plate001 = part.FindModelTransform("Plate.001");
+			Transform Plate002 = part.FindModelTransform("Plate.002");
+			Transform Plate003 = part.FindModelTransform("Plate.003");
+
+			bool respectLength = (portMode > 1) || !companionOffset.IsZero();
 
 			if(Plate000)
 			{
 				Vector3 Pos000 = Plate000.localPosition;
-				Pos000.x = (portMode > 0) ? length * 0.5f : 0f;
+				Pos000.x = respectLength ? length * 0.5f : 0f;
 				Pos000.z = -1.231f - width * 0.5f;
 				Plate000.localPosition = Pos000;
 			}
@@ -469,7 +532,7 @@ namespace PayloadRetentionSystemNext.Module
 			if(Plate002)
 			{
 				Vector3 Pos002 = Plate002.localPosition;
-				Pos002.x = (portMode > 0) ? length * 0.5f : 0f;
+				Pos002.x = respectLength ? length * 0.5f : 0f;
 				Pos002.z = 1.231f + width * 0.5f;
 				Plate002.localPosition = Pos002;
 			}
@@ -485,14 +548,14 @@ namespace PayloadRetentionSystemNext.Module
 
 		internal void UpdatePosition()
 		{
-			Transform Pins = KSPUtil.FindInPartModel(transform, "TrunnionPinsNode").parent;
+			Transform Pins = nodeTransform.parent;
 			Pins.localPosition = new Vector3(offsetX, offsetY, offsetZ) + companionOffset;
 			UpdateNode();
 		}
 
 		internal void UpdateRotation()
 		{
-			Transform Pins = KSPUtil.FindInPartModel(transform, "TrunnionPinsNode").parent;
+			Transform Pins = nodeTransform.parent;
 			Pins.localRotation = Quaternion.AngleAxis(rotationX, Vector3.right) * Quaternion.AngleAxis(rotationY, Vector3.up) * Quaternion.AngleAxis(rotationZ, Vector3.forward);
 			UpdateNode();
 		}
@@ -502,48 +565,57 @@ namespace PayloadRetentionSystemNext.Module
 			part.UpdateAttachNodes();
 		}
 
-// FEHLER, hier das Zeug echt genauer setzen und so... und vor allem die Position prüfen, ob das überhaupt geht, sonst verwerfen
 		internal void SetCompanion(ModuleTrunnionPins other)
 		{
-			if(portMode == 2)
-				return;
+			ClearCompanion();
+			other.ClearCompanion();
 
 			companion = other;
 			other.companion = this;
 
-			// FEHLER, wir gehen im Moment einfach vom optimalen Fall aus -> der andere muss 2 und passiv sein
+			Utility.ObjectLinkHelper.Link(this, other);
 
-			companion.portMode = 0; // 2 passiv
-			portMode = 1; // 2 aktiv
+			Transform Pins = nodeTransform.parent;
 
-			Transform Pins = KSPUtil.FindInPartModel(transform, "TrunnionPinsNode").parent;
-			Transform otherPins = KSPUtil.FindInPartModel(companion.transform, "TrunnionPinsNode").parent;
-
-			// if .x und .z sind nicht 0, oder genug klein, dann abbrechen, weil's nicht passt? wäre das eine Idee?
-
-			companionOffset = Pins.parent.InverseTransformVector(otherPins.position - Pins.position) * 0.5f;
+			companionOffset = Pins.parent.InverseTransformVector(other.nodeTransform.position - nodeTransform.position) * 0.5f;
 
 			length = -2f * (Quaternion.Inverse(Pins.localRotation) * companionOffset).x;
+
+			SetVisibility();
 
 			UpdateDimension();
 			UpdatePosition();
 			UpdateNode();
+
+			other.SetVisibility();
+
+			other.UpdateDimension();
+			other.UpdatePosition();
+			other.UpdateNode();
+
+			other.ShowContextMenu(false);
 		}
 
 		internal void ClearCompanion()
 		{
-			if(portMode == 2)
+			if(companion == null)
 				return;
 
 			ModuleTrunnionPins _c = companion;
 			companion = null;
+			companionPartId = 0;
+			companionOffset = Vector3.zero;
 
 			if(_c)
 				_c.ClearCompanion();
 
 			length = 2f;
 
+			SetVisibility();
+
 			UpdatePosition();
+
+			ShowContextMenu(true);
 		}
 
 		////////////////////////////////////////
@@ -603,6 +675,21 @@ namespace PayloadRetentionSystemNext.Module
 
 		////////////////////////////////////////
 		// Settings
+
+		[KSPField(isPersistant = true, guiActive = false, guiActiveEditor = true, guiName = "Use Trunnion-Pins")]
+		[UI_Toggle(disabledText = "Installed", scene = UI_Scene.All, enabledText = "Removed", affectSymCounterparts = UI_Scene.All)]
+		public bool removed = false;
+
+		public void onChanged_removed(object o)
+		{
+			ShowContextMenu(!removed);
+
+			Fields["length"].guiActiveEditor = !removed && (portMode == 2);
+
+			SetVisibility();
+
+			DockStatus = removed ? "Inoperable" : "Ready";
+		}
 
 		[KSPAxisField(isPersistant = true, guiActive = false, guiActiveEditor = true, guiName = "Trunnion-Pin Distance (x)", guiFormat = "F3",
 			axisMode = KSPAxisMode.Incremental, minValue = 0.6f, maxValue = 8f),
@@ -667,6 +754,22 @@ namespace PayloadRetentionSystemNext.Module
 		////////////////////////////////////////
 		// Context Menu
 
+		private void ShowContextMenu(bool visible)
+		{
+			Fields["length"].guiActiveEditor = visible && (portMode == 2);
+
+			Fields["width"].guiActiveEditor = visible;
+			Fields["offsetX"].guiActiveEditor = visible;
+			Fields["offsetY"].guiActiveEditor = visible;
+			Fields["offsetZ"].guiActiveEditor = visible;
+			Fields["rotationX"].guiActiveEditor = visible;
+			Fields["rotationY"].guiActiveEditor = visible;
+			Fields["rotationZ"].guiActiveEditor = visible;
+			Events["TogglePortMode"].guiActiveEditor = visible;
+
+			Events["SelectCompanion"].guiActiveEditor = visible && (portMode == 1);
+		}
+
 		[KSPField(guiName = "Trunnion Port status", isPersistant = false, guiActive = true, guiActiveUnfocused = true, unfocusedRange = 20)]
 		public string DockStatus = "Ready";
 
@@ -696,13 +799,17 @@ namespace PayloadRetentionSystemNext.Module
 		{
 			switch(portMode)
 			{
-			case 0:
-				Events["TogglePortMode"].guiName = "Port Mode: 2 Pins - passive"; SetVisibility(false); break;
 			case 1:
-				Events["TogglePortMode"].guiName = "Port Mode: 2 Pins - active"; SetVisibility(false); break;
+				Events["TogglePortMode"].guiName = "Port Mode: 2 Pins";
+				break;
 			case 2:
-				Events["TogglePortMode"].guiName = "Port Mode: 4 Pins"; SetVisibility(true); break;
+				Events["TogglePortMode"].guiName = "Port Mode: 4 Pins";
+				break;
 			}
+
+			SetVisibility();
+			Fields["length"].guiActiveEditor = (portMode == 2);
+			Events["SelectCompanion"].guiActiveEditor = (portMode == 1);
 		}
 
 		public int PortMode
@@ -711,11 +818,70 @@ namespace PayloadRetentionSystemNext.Module
 			set { if(portMode == value) return; portMode = value; onChanged_portMode(null); }
 		}
 
-		[KSPEvent(guiActive = true, guiActiveEditor = true, guiName = "Port Mode: 4 Pins")]
+		[KSPEvent(guiActive = false, guiActiveEditor = true, guiName = "Port Mode: 4 Pins")]
 		public void TogglePortMode()
 		{
-			portMode = (portMode + 1) % 3;
+			portMode = (portMode == 1) ? 2 : 1;
 			onChanged_portMode(null);
+		}
+
+		[KSPEvent(guiActive = false, guiActiveEditor = true, guiName = "Select Companion")]
+		public void SelectCompanion()
+		{
+			GameObject go = new GameObject("PartSelectorHelper");
+			Utility.PartSelector Selector = go.AddComponent<Utility.PartSelector>();
+
+			Selector.onSelectedCallback = onSelectedCompanion;
+
+			foreach(Part p in EditorLogic.fetch.ship.parts)
+			{
+				ModuleTrunnionPins m = p.GetComponent<ModuleTrunnionPins>();
+				
+				if((m != null) && (p != part) && (m.portMode == 1))
+					Selector.AddPart(p);
+			}
+
+			Selector.StartSelection();
+		}
+
+		private void onSelectedCompanion(Part p)
+		{
+			ModuleTrunnionPins other = p.GetComponent<ModuleTrunnionPins>();
+
+			if(other.portMode != 1)
+				return;
+
+			if(Mathf.Abs(width - other.width) > 0.1f)
+				return;
+
+			bool angle = false;
+
+			for(int i = 0; i < snapCount; i++)
+			{
+				Quaternion snapRotation = Quaternion.AngleAxis(i * (360f / snapCount), nodeTransform.forward);
+
+				if(Quaternion.Angle(nodeTransform.rotation * snapRotation, other.nodeTransform.rotation) < 1f)
+					angle = true;
+			}
+
+			if(!angle)
+			{
+				ScreenMessages.PostScreenMessage(INVALID_ANGLE_TEXT, 5, ScreenMessageStyle.UPPER_CENTER);
+				return;
+			}
+
+			Vector3 distance = nodeTransform.InverseTransformPoint(other.nodeTransform.position);
+
+			if((Mathf.Abs(distance.y) > 0.1f) || (Mathf.Abs(distance.z) > 0.1f))
+			{
+				ScreenMessages.PostScreenMessage(INVALID_ALIGNMENT_TEXT, 5, ScreenMessageStyle.UPPER_CENTER);
+				return;
+			}
+
+			if(part.mass >= other.part.mass)
+				SetCompanion(other);
+			else
+				other.SetCompanion(this);
 		}
 
 		////////////////////////////////////////
@@ -747,6 +913,7 @@ namespace PayloadRetentionSystemNext.Module
 		////////////////////////////////////////
 		// IDockable
 
+// FEHLER; alles an den companion leiten, wenn der derjenige ist, der den Ton angibt? ... das mal noch prüfen du...
 		private DockInfo dockInfo;
 
 		public Part GetPart()
