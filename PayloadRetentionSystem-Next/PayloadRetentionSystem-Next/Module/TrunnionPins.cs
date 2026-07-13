@@ -45,7 +45,7 @@ namespace PayloadRetentionSystemNext.Module
 
 		public uint partId = 0;
 		public uint companionPartId = 0;
-		public uint companionPartFlightId = 0;
+	//	public uint companionPartFlightId = 0;
 
 		public ModuleTrunnionPins companion = null;
 
@@ -117,7 +117,7 @@ namespace PayloadRetentionSystemNext.Module
 
 			node.TryGetValue("partId", ref partId);
 			node.TryGetValue("companionPartId", ref companionPartId);
-			node.TryGetValue("companionPartFlightId", ref companionPartFlightId);
+		//	node.TryGetValue("companionPartFlightId", ref companionPartFlightId);
 
 			if(node.HasValue("companionOffset"))
 				companionOffset = ConfigNode.ParseVector3(node.GetValue("companionOffset"));
@@ -152,14 +152,11 @@ namespace PayloadRetentionSystemNext.Module
 
 			node.AddValue("portName", portName);
 
-			if(companion)
-			{
-				node.AddValue("partId", partId);
-				node.AddValue("companionPartId", companionPartId);
-				node.AddValue("companionPartFlightId", companionPartFlightId);
+			node.AddValue("partId", partId);
+			node.AddValue("companionPartId", companionPartId);
+		//	node.AddValue("companionPartFlightId", companionPartFlightId);
 
-				node.AddValue("companionOffset", companionOffset);
-			}
+			node.AddValue("companionOffset", companionOffset);
 
 			node.AddValue("state", (string)(((fsm != null) && (fsm.Started)) ? fsm.currentStateName : DockStatus));
 
@@ -235,25 +232,27 @@ namespace PayloadRetentionSystemNext.Module
 					}
 				}
 			}
-			else
-			{
-				if(companionPartFlightId != 0)
-				{
-					Part companionPart;
+		//	else
+		//	{
+		//		if(companionPartFlightId != 0)
+		//		{
+		//			Part companionPart;
+		//
+		//			while(!(companionPart = FlightGlobals.FindPartByID(companionPartFlightId)))
+		//				yield return null;
+		//
+		//			companion = companionPart.GetComponent<ModuleTrunnionPins>();
+		//		}
+		//	}
 
-					while(!(companionPart = FlightGlobals.FindPartByID(companionPartFlightId)))
-						yield return null;
-
-					companion = companionPart.GetComponent<ModuleTrunnionPins>();
-				}
-			}
-
-			onChanged_portMode(null);
+			SetVisibility();
 
 			UpdateDimension();
 			UpdatePosition();
 			UpdateRotation();
 			UpdateNode();
+
+			ShowContextMenu(true);
 
 			SetupFSM();
 
@@ -456,23 +455,29 @@ namespace PayloadRetentionSystemNext.Module
 				c.enabled = visible;
 		}
 
+		[KSPField(isPersistant = true)]
+		public int mode = 2;
+
 		internal void SetVisibility()
 		{
-			int mode = 0;
-
-			if(!removed)
+			if(HighLogic.LoadedSceneIsEditor)
 			{
-				if(portMode == 1)
+				mode = 0;
+
+				if(!removed)
 				{
-					if(!companionOffset.IsZero())
-						mode = 2;
-					else if(companion != null)
-						mode = 0;
+					if(portMode == 1)
+					{
+						if(!companionOffset.IsZero())
+							mode = 2;
+						else if(companion != null)
+							mode = 0;
+						else
+							mode = 1;
+					}
 					else
-						mode = 1;
+						mode = 2;
 				}
-				else
-					mode = 2;
 			}
 
 			UpdateDimension();
@@ -511,7 +516,7 @@ namespace PayloadRetentionSystemNext.Module
 			Transform Plate002 = part.FindModelTransform("Plate.002");
 			Transform Plate003 = part.FindModelTransform("Plate.003");
 
-			bool respectLength = (portMode > 1) || !companionOffset.IsZero();
+			bool respectLength = (mode == 2);
 
 			if(Plate000)
 			{
@@ -549,7 +554,7 @@ namespace PayloadRetentionSystemNext.Module
 		internal void UpdatePosition()
 		{
 			Transform Pins = nodeTransform.parent;
-			Pins.localPosition = new Vector3(offsetX, offsetY, offsetZ) + companionOffset;
+			Pins.localPosition = new Vector3(offsetX, offsetY, offsetZ);
 			UpdateNode();
 		}
 
@@ -579,13 +584,18 @@ namespace PayloadRetentionSystemNext.Module
 
 			companionOffset = Pins.parent.InverseTransformVector(other.nodeTransform.position - nodeTransform.position) * 0.5f;
 
-			length = -2f * (Quaternion.Inverse(Pins.localRotation) * companionOffset).x;
+			offsetX += companionOffset.x;
+			offsetY += companionOffset.y;
+			offsetZ += companionOffset.z;
+			length = 2f * (Quaternion.Inverse(Pins.localRotation) * companionOffset).x;
 
 			SetVisibility();
 
 			UpdateDimension();
 			UpdatePosition();
 			UpdateNode();
+
+			ShowContextMenu(true);
 
 			other.SetVisibility();
 
@@ -609,7 +619,11 @@ namespace PayloadRetentionSystemNext.Module
 			if(_c)
 				_c.ClearCompanion();
 
-			length = 2f;
+			ModuleTrunnionPins prefab = part.partInfo.partPrefab.GetComponent<ModuleTrunnionPins>();
+			offsetX = prefab.offsetX;
+			offsetY = prefab.offsetY;
+			offsetZ = prefab.offsetZ;
+			length = prefab.length;
 
 			SetVisibility();
 
@@ -684,7 +698,7 @@ namespace PayloadRetentionSystemNext.Module
 		{
 			ShowContextMenu(!removed);
 
-			Fields["length"].guiActiveEditor = !removed && (portMode == 2);
+			Fields["length"].guiActiveEditor = !removed && ((portMode == 2) || ((portMode == 1) && companion));
 
 			SetVisibility();
 
@@ -756,7 +770,7 @@ namespace PayloadRetentionSystemNext.Module
 
 		private void ShowContextMenu(bool visible)
 		{
-			Fields["length"].guiActiveEditor = visible && (portMode == 2);
+			Fields["length"].guiActiveEditor = visible && ((portMode == 2) || ((portMode == 1) && companion));
 
 			Fields["width"].guiActiveEditor = visible;
 			Fields["offsetX"].guiActiveEditor = visible;
@@ -767,7 +781,18 @@ namespace PayloadRetentionSystemNext.Module
 			Fields["rotationZ"].guiActiveEditor = visible;
 			Events["TogglePortMode"].guiActiveEditor = visible;
 
-			Events["SelectCompanion"].guiActiveEditor = visible && (portMode == 1);
+			switch(portMode)
+			{
+			case 1:
+				Events["TogglePortMode"].guiName = !companion ? "Port Mode: 2 Pins" : "Port Mode: 2+2 Pins";
+				break;
+			case 2:
+				Events["TogglePortMode"].guiName = "Port Mode: 4 Pins";
+				break;
+			}
+
+			Events["SelectCompanion"].guiActiveEditor = visible && (portMode == 1) && !companion;
+			Events["RemoveCompanion"].guiActiveEditor = visible && (portMode == 1) && companion;
 		}
 
 		[KSPField(guiName = "Trunnion Port status", isPersistant = false, guiActive = true, guiActiveUnfocused = true, unfocusedRange = 20)]
@@ -797,19 +822,11 @@ namespace PayloadRetentionSystemNext.Module
 
 		private void onChanged_portMode(object o)
 		{
-			switch(portMode)
-			{
-			case 1:
-				Events["TogglePortMode"].guiName = "Port Mode: 2 Pins";
-				break;
-			case 2:
-				Events["TogglePortMode"].guiName = "Port Mode: 4 Pins";
-				break;
-			}
+			ClearCompanion();
 
 			SetVisibility();
-			Fields["length"].guiActiveEditor = (portMode == 2);
-			Events["SelectCompanion"].guiActiveEditor = (portMode == 1);
+
+			ShowContextMenu(true);
 		}
 
 		public int PortMode
@@ -882,6 +899,12 @@ namespace PayloadRetentionSystemNext.Module
 				SetCompanion(other);
 			else
 				other.SetCompanion(this);
+		}
+
+		[KSPEvent(guiActive = false, guiActiveEditor = true, guiName = "Clear Companion")]
+		public void RemoveCompanion()
+		{
+			ClearCompanion();
 		}
 
 		////////////////////////////////////////
